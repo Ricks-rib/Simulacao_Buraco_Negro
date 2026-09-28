@@ -1,15 +1,20 @@
-"""Renderizador CPU de referência (PLANO, Fase 2): float64, Numba paralelo.
+"""Renderizador CPU de referência (PLANO, Fases 2 e 3): float64, Numba paralelo.
 
-Cada pixel dispara n×n sub-amostras em grade regular. Cada raio parte da câmera com a
-velocidade da tétrade estática e é integrado por ``physics.integrate_ray``:
+O render tem duas etapas:
 
-- CAPTURED ou MAX_STEPS: preto (sombra; o limite de passos é tratado como captura);
-- ESCAPED: xadrez celeste pela direção final de v.
+1. ``_trace_kernel`` (``prange``): cada pixel dispara n×n sub-amostras em grade regular.
+   Cada raio parte da câmera com a velocidade da tétrade estática, é integrado por
+   ``physics.integrate_ray`` (com o disco) e guarda status, x, v e φ percorrido.
+2. ``_shade_kernel`` (``prange``): cada sub-amostra vira radiância linear:
 
-As cores são médias das sub-amostras em [0, 1] e vão direto para uint8 (a cadeia
-linear + tone mapping é da Fase 3). O disco fica desligado nesta fase.
+   - CAPTURED ou MAX_STEPS: preto (sombra; o limite de passos é tratado como captura);
+   - DISK: (T/T_pico)⁴ · rgb(T) no raio do impacto (as duas faces emitem igual);
+   - ESCAPED: fundo pela direção final de v, em xadrez ou estrelas.
 
-Uso: ``uv run python -m blackhole.render_cpu [--width ... --supersample ...]``
+   A média das sub-amostras é feita em espaço linear e passa pela cadeia exposição →
+   ACES → sRGB, a mesma para o disco e para o fundo (seção 3.6).
+
+Uso: ``uv run python -m blackhole.render_cpu [--width ... --supersample ... --background ...]``
 """
 
 import argparse
@@ -26,24 +31,34 @@ from blackhole.camera import Camera, pixel_direction, pixel_offset
 from blackhole.config import (
     CameraConfig,
     CheckerConfig,
+    ColorConfig,
     DiskConfig,
     IntegratorConfig,
     RenderConfig,
+    StarfieldConfig,
 )
 from blackhole.physics import (
+    DISK,
     ESCAPED,
     escape_radius,
     integrate_ray,
     static_observer_velocity,
 )
-from blackhole.scene import checker_color
+from blackhole.scene import (
+    blackbody_table,
+    checker_color,
+    disk_radiance,
+    encode_pixel,
+    star_radiance,
+)
 
-# Fase 2: sem disco (o render passa disk_enabled=False).
-_DISK_OFF = DiskConfig(enabled=False)
+# Modos de fundo aceitos em ``RenderConfig.background`` e o código passado aos kernels.
+BACKGROUNDS = {"checker": 0, "stars": 1}
+_BG_CHECKER = BACKGROUNDS["checker"]
 
 
 @njit(cache=True, parallel=True)
-def _render_kernel(
+def _trace_kernel(
     position,
     forward,
     right,
@@ -63,20 +78,21 @@ def _render_kernel(
     disk_enabled,
     r_in,
     r_out,
-    cell_rad,
-    color_a,
-    color_b,
     no_trace,
 ):
-    """Imagem float64 (H, W, 3) em [0, 1], com um laço ``prange`` sobre as linhas."""
-    image = np.zeros((height, width, 3))
+    """Integra as n×n sub-amostras de cada pixel, com um laço ``prange`` sobre as linhas.
+
+    Devolve ``status`` (H, W, S), ``x`` e ``v`` (H, W, S, 3) finais e ``phi`` (H, W, S),
+    com S = n² e a sub-amostra k = sy·n + sx.
+    """
+    n_sub = supersample * supersample
+    status = np.empty((height, width, n_sub), dtype=np.int64)
+    xs = np.empty((height, width, n_sub, 3))
+    vs = np.empty((height, width, n_sub, 3))
+    phis = np.empty((height, width, n_sub))
     inv_n = 1.0 / supersample
-    inv_samples = inv_n * inv_n
     for j in prange(height):
         for i in range(width):
-            acc_r = 0.0
-            acc_g = 0.0
-            acc_b = 0.0
             for sy in range(supersample):
                 for sx in range(supersample):
                     # Centro da sub-célula: s = (k + 0,5)/n − 0,5 (s = 0 com 1×1).
@@ -85,7 +101,7 @@ def _render_kernel(
                     p, q = pixel_offset(i, j, s_x, s_y, width, height)
                     n = pixel_direction(p, q, pixel_scale, forward, right, up)
                     v0 = static_observer_velocity(position, n)
-                    status, _, v, _, _ = integrate_ray(
+                    st, x, v, phi, _ = integrate_ray(
                         position,
                         v0,
                         r_max,
@@ -101,15 +117,136 @@ def _render_kernel(
                         r_out,
                         no_trace,
                     )
-                    # Qualquer outro status (CAPTURED, MAX_STEPS) é sombra: soma zero.
-                    if status == ESCAPED:
-                        c = checker_color(v, cell_rad, color_a, color_b)
-                        acc_r += c[0]
-                        acc_g += c[1]
-                        acc_b += c[2]
-            image[j, i, 0] = acc_r * inv_samples
-            image[j, i, 1] = acc_g * inv_samples
-            image[j, i, 2] = acc_b * inv_samples
+                    k = sy * supersample + sx
+                    status[j, i, k] = st
+                    phis[j, i, k] = phi
+                    for c in range(3):
+                        xs[j, i, k, c] = x[c]
+                        vs[j, i, k, c] = v[c]
+    return status, xs, vs, phis
+
+
+@njit(cache=True)
+def shade_sample(
+    status,
+    x,
+    v,
+    r_in,
+    t_peak,
+    table,
+    t_min,
+    t_max,
+    background,
+    cell_rad,
+    color_a,
+    color_b,
+    star_grid,
+    star_density,
+    star_jitter,
+    star_seed,
+    star_sigma,
+    star_i_min,
+    star_i_max,
+    star_t_min,
+    star_t_max,
+):
+    """Radiância linear (antes da exposição) de uma sub-amostra já integrada.
+
+    DISK usa só o raio do impacto (x = (px, 0, pz)): as faces de cima e de baixo emitem
+    igual. ESCAPED amostra o fundo pela direção final de v. Os demais status são sombra.
+    """
+    if status == DISK:
+        r = math.sqrt(x[0] * x[0] + x[2] * x[2])
+        return disk_radiance(r, r_in, t_peak, table, t_min, t_max)
+    if status == ESCAPED:
+        if background == _BG_CHECKER:
+            c = checker_color(v, cell_rad, color_a, color_b)
+            return c[0], c[1], c[2]
+        return star_radiance(
+            v,
+            star_grid,
+            star_density,
+            star_jitter,
+            star_seed,
+            star_sigma,
+            star_i_min,
+            star_i_max,
+            star_t_min,
+            star_t_max,
+            table,
+            t_min,
+            t_max,
+        )
+    return 0.0, 0.0, 0.0
+
+
+@njit(cache=True, parallel=True)
+def _shade_kernel(
+    status,
+    xs,
+    vs,
+    exposure,
+    r_in,
+    t_peak,
+    table,
+    t_min,
+    t_max,
+    background,
+    cell_rad,
+    color_a,
+    color_b,
+    star_grid,
+    star_density,
+    star_jitter,
+    star_seed,
+    star_sigma,
+    star_i_min,
+    star_i_max,
+    star_t_min,
+    star_t_max,
+):
+    """Imagem (H, W, 3) em [0, 1]: média linear das sub-amostras → exposição → ACES → sRGB."""
+    height, width, n_sub = status.shape
+    image = np.zeros((height, width, 3))
+    inv_samples = 1.0 / n_sub
+    for j in prange(height):
+        for i in range(width):
+            acc_r = 0.0
+            acc_g = 0.0
+            acc_b = 0.0
+            for k in range(n_sub):
+                lr, lg, lb = shade_sample(
+                    status[j, i, k],
+                    xs[j, i, k],
+                    vs[j, i, k],
+                    r_in,
+                    t_peak,
+                    table,
+                    t_min,
+                    t_max,
+                    background,
+                    cell_rad,
+                    color_a,
+                    color_b,
+                    star_grid,
+                    star_density,
+                    star_jitter,
+                    star_seed,
+                    star_sigma,
+                    star_i_min,
+                    star_i_max,
+                    star_t_min,
+                    star_t_max,
+                )
+                acc_r += lr
+                acc_g += lg
+                acc_b += lb
+            er, eg, eb = encode_pixel(
+                acc_r * inv_samples, acc_g * inv_samples, acc_b * inv_samples, exposure
+            )
+            image[j, i, 0] = er
+            image[j, i, 1] = eg
+            image[j, i, 2] = eb
     return image
 
 
@@ -118,22 +255,16 @@ def to_uint8(image):
     return np.round(np.clip(image, 0.0, 1.0) * 255.0).astype(np.uint8)
 
 
-def render(
-    camera: Camera,
-    render_cfg: RenderConfig,
-    integrator: IntegratorConfig | None = None,
-    checker: CheckerConfig | None = None,
-):
-    """Renderiza a cena vista por ``camera`` e devolve um array uint8 (H, W, 3)."""
-    integrator = IntegratorConfig() if integrator is None else integrator
-    checker = CheckerConfig() if checker is None else checker
+def _validate(render_cfg: RenderConfig):
     if render_cfg.width < 1 or render_cfg.height < 1:
         raise ValueError("a imagem precisa de largura e altura ≥ 1")
     if render_cfg.supersample < 1:
         raise ValueError("supersample precisa ser ≥ 1")
 
+
+def _trace(camera, render_cfg, integrator, disk, supersample):
     r_max = escape_radius(camera.r_cam, render_cfg.r_max_min, render_cfg.r_max_factor)
-    image = _render_kernel(
+    return _trace_kernel(
         camera.position,
         camera.forward,
         camera.right,
@@ -141,7 +272,7 @@ def render(
         int(render_cfg.width),
         int(render_cfg.height),
         camera.pixel_scale(render_cfg.height),
-        int(render_cfg.supersample),
+        int(supersample),
         float(r_max),
         int(integrator.max_steps),
         float(integrator.step_factor),
@@ -150,13 +281,82 @@ def render(
         float(integrator.photon_r_max),
         float(integrator.dt_min),
         float(integrator.dt_max),
-        bool(_DISK_OFF.enabled),
-        float(_DISK_OFF.r_in),
-        float(_DISK_OFF.r_out),
+        bool(disk.enabled),
+        float(disk.r_in),
+        float(disk.r_out),
+        np.empty((0, 6)),
+    )
+
+
+def trace_fields(
+    camera: Camera,
+    render_cfg: RenderConfig,
+    integrator: IntegratorConfig | None = None,
+    disk: DiskConfig | None = None,
+):
+    """Integra um raio por pixel (1×1, ignora ``supersample``) e devolve os campos brutos.
+
+    Devolve ``(status, x, v, phi)`` com formas (H, W), (H, W, 3), (H, W, 3) e (H, W): o
+    status da seção 3.4, a posição e a velocidade finais e o ângulo φ percorrido no plano
+    orbital. Serve aos testes estruturais do disco.
+    """
+    integrator = IntegratorConfig() if integrator is None else integrator
+    disk = DiskConfig() if disk is None else disk
+    _validate(render_cfg)
+    status, xs, vs, phis = _trace(camera, render_cfg, integrator, disk, 1)
+    return status[:, :, 0], xs[:, :, 0], vs[:, :, 0], phis[:, :, 0]
+
+
+def render(
+    camera: Camera,
+    render_cfg: RenderConfig,
+    integrator: IntegratorConfig | None = None,
+    checker: CheckerConfig | None = None,
+    disk: DiskConfig | None = None,
+    color: ColorConfig | None = None,
+    starfield: StarfieldConfig | None = None,
+    background: str | None = None,
+):
+    """Renderiza a cena vista por ``camera`` e devolve um array uint8 (H, W, 3).
+
+    ``background`` ("checker" ou "stars") substitui ``render_cfg.background`` quando dado.
+    """
+    integrator = IntegratorConfig() if integrator is None else integrator
+    checker = CheckerConfig() if checker is None else checker
+    disk = DiskConfig() if disk is None else disk
+    color = ColorConfig() if color is None else color
+    starfield = StarfieldConfig() if starfield is None else starfield
+    background = render_cfg.background if background is None else background
+    if background not in BACKGROUNDS:
+        raise ValueError(
+            f"fundo {background!r} inválido; use um de {', '.join(sorted(BACKGROUNDS))}"
+        )
+    _validate(render_cfg)
+
+    status, xs, vs, _ = _trace(camera, render_cfg, integrator, disk, render_cfg.supersample)
+    image = _shade_kernel(
+        status,
+        xs,
+        vs,
+        float(color.exposure),
+        float(disk.r_in),
+        float(disk.t_peak),
+        blackbody_table(color),
+        float(color.bb_t_min),
+        float(color.bb_t_max),
+        int(BACKGROUNDS[background]),
         math.radians(checker.cell_deg),
         tuple(float(c) for c in checker.color_a),
         tuple(float(c) for c in checker.color_b),
-        np.empty((0, 6)),
+        float(starfield.grid_size),
+        float(starfield.density),
+        float(starfield.jitter),
+        int(starfield.seed),
+        float(starfield.sigma),
+        float(starfield.intensity_min),
+        float(starfield.intensity_max),
+        float(starfield.t_min),
+        float(starfield.t_max),
     )
     return to_uint8(image)
 
@@ -172,7 +372,9 @@ def save_png(image, path):
 def main(argv=None):
     cam_cfg = CameraConfig()
     render_cfg = RenderConfig()
-    parser = argparse.ArgumentParser(description="Renderizador CPU de referência (Fase 2).")
+    disk_cfg = DiskConfig()
+    color_cfg = ColorConfig()
+    parser = argparse.ArgumentParser(description="Renderizador CPU de referência.")
     parser.add_argument("--width", type=int, default=render_cfg.width)
     parser.add_argument("--height", type=int, default=render_cfg.height)
     parser.add_argument(
@@ -184,6 +386,14 @@ def main(argv=None):
         "--inclination", type=float, default=cam_cfg.inclination_deg, help="a partir de +y (°)"
     )
     parser.add_argument("--azimuth", type=float, default=cam_cfg.azimuth_deg, help="(°)")
+    parser.add_argument(
+        "--background", choices=sorted(BACKGROUNDS), default=render_cfg.background
+    )
+    parser.add_argument("--no-disk", action="store_true", help="desliga o disco de acreção")
+    parser.add_argument("--exposure", type=float, default=color_cfg.exposure)
+    parser.add_argument(
+        "--t-peak", type=float, default=disk_cfg.t_peak, help="temperatura de pico do disco (K)"
+    )
     parser.add_argument(
         "--output",
         type=Path,
@@ -200,18 +410,26 @@ def main(argv=None):
         azimuth_deg=args.azimuth,
     )
     render_cfg = replace(
-        render_cfg, width=args.width, height=args.height, supersample=args.supersample
+        render_cfg,
+        width=args.width,
+        height=args.height,
+        supersample=args.supersample,
+        background=args.background,
     )
+    disk_cfg = replace(disk_cfg, enabled=not args.no_disk, t_peak=args.t_peak)
+    color_cfg = replace(color_cfg, exposure=args.exposure)
     camera = Camera.from_config(cam_cfg)
 
     start = time.perf_counter()
-    image = render(camera, render_cfg)
+    image = render(camera, render_cfg, disk=disk_cfg, color=color_cfg)
     elapsed = time.perf_counter() - start
 
     path = save_png(image, args.output)
     ss = render_cfg.supersample
+    disk_label = "com disco" if disk_cfg.enabled else "sem disco"
     print(
-        f"{render_cfg.width}x{render_cfg.height} ({ss}x{ss}), r_cam = {camera.r_cam:g}: "
+        f"{render_cfg.width}x{render_cfg.height} ({ss}x{ss}), r_cam = {camera.r_cam:g}, "
+        f"{disk_label}, fundo {render_cfg.background}: "
         f"render em {elapsed:.2f} s, salvo em {path}"
     )
     return 0

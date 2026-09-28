@@ -42,6 +42,8 @@ class DiskConfig:
     r_in: float = 3.0
     r_out: float = 12.0
     enabled: bool = True
+    # Temperatura no pico do perfil T(r), em kelvin, atingida em r_pico = (49/36)·r_in.
+    t_peak: float = 10_000.0
 
 
 @dataclass(frozen=True)
@@ -79,6 +81,8 @@ class RenderConfig:
     r_max_factor: float = 2.0
     output_dir: str = "outputs"
     output_name: str = "render_cpu.png"
+    # Fundo dos raios que escapam: "checker" (depuração) ou "stars" (seção 3.7).
+    background: str = "stars"
 
 
 @dataclass(frozen=True)
@@ -90,3 +94,46 @@ class CheckerConfig:
     # Cores das casas em [0, 1] (RGB). Nenhuma é preta, para não confundir com a sombra.
     color_a: tuple[float, float, float] = (0.92, 0.92, 0.92)
     color_b: tuple[float, float, float] = (0.20, 0.35, 0.70)
+
+
+@dataclass(frozen=True)
+class ColorConfig:
+    """Cadeia de cor (PLANO, seção 3.6): corpo negro, exposição, ACES e sRGB."""
+
+    # Multiplicador da radiância linear antes do tone mapping (disco e fundo).
+    exposure: float = 1.0
+    # Faixa da tabela de corpo negro, em kelvin; fora dela vale a cor da extremidade.
+    bb_t_min: float = 1_000.0
+    bb_t_max: float = 40_000.0
+    # Número de entradas da tabela, espaçadas uniformemente em ln T.
+    bb_table_size: int = 256
+    # Integração de Planck × CMF CIE 1931: faixa visível e passo, em nm.
+    wavelength_min_nm: float = 380.0
+    wavelength_max_nm: float = 780.0
+    wavelength_step_nm: float = 1.0
+
+
+@dataclass(frozen=True)
+class StarfieldConfig:
+    """Campo estelar procedural determinístico (PLANO, seção 3.7).
+
+    A direção unitária d̂ cai na célula ⌊d̂·N⌋ de uma rede cúbica 3D. Cada célula tem no
+    máximo uma estrela, decidida por um hash inteiro de 32 bits dos índices da célula.
+    """
+
+    # N: células por unidade de comprimento; a célula subtende ≈ 1/N rad no céu.
+    grid_size: int = 100
+    # Probabilidade de uma célula conter estrela.
+    density: float = 0.05
+    # Deslocamento máximo do centro da estrela, em frações da célula (0 = no centro).
+    jitter: float = 0.4
+    # Semente do hash (inteiro de 32 bits sem sinal).
+    seed: int = 1337
+    # Largura σ do perfil gaussiano, medida na corda |d̂ − ŝ| (≈ radianos).
+    sigma: float = 0.0015
+    # Intensidade de pico, log-uniforme entre os limites (radiância linear).
+    intensity_min: float = 0.05
+    intensity_max: float = 3.0
+    # Temperatura de cor, log-uniforme entre os limites, em kelvin.
+    t_min: float = 2_500.0
+    t_max: float = 30_000.0

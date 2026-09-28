@@ -8,7 +8,9 @@ integrada na forma cartesiana equivalente (PLANO, seção 3.2):
 A órbita r(φ) coincide com a da geodésica (equação de Binet u'' + u = (3/2) u²).
 
 Esta é a fonte da verdade da física: constantes, geodésica e integrador, invariantes,
-tétrade do observador estático, raio de escape e fórmula de Synge ficam aqui.
+tétrade do observador estático, raio de escape, fórmula de Synge e perfil de temperatura
+do disco de acreção (seção 3.6) ficam aqui. A colorimetria (corpo negro, tone mapping,
+sRGB) e as estrelas ficam em ``scene.py``.
 ``shaders/blackhole.frag`` replica cada uma com o comentário ``// ver physics.py: <nome>``.
 A projeção da câmera (``camera.py``) e o fundo (``scene.py``) também são replicados no
 shader, com a mesma convenção ``// ver <arquivo>.py: <nome>``.
@@ -340,3 +342,34 @@ def shadow_angular_radius(r):
     if r < R_PHOTON:
         alpha = math.pi - alpha
     return alpha
+
+
+# --- disco de acreção (seção 3.6) -------------------------------------------
+
+# r_pico/r_in: o máximo de f(r) = r^(−3/4)·(1 − √(r_in/r))^(1/4) sai de
+# d ln f/dr = 0 ⇔ √(r_in/r) = 6/7, isto é, r = (49/36)·r_in.
+PEAK_RADIUS_RATIO = 49.0 / 36.0
+
+
+@njit(cache=True)
+def peak_radius(r_in):
+    """Raio do pico de temperatura do disco, r_pico = (49/36)·r_in (≈ 4,08 com r_in = 3)."""
+    return PEAK_RADIUS_RATIO * r_in
+
+
+@njit(cache=True)
+def _disk_profile(r, r_in):
+    """f(r) = r^(−3/4) · (1 − √(r_in/r))^(1/4), com f = 0 para r ≤ r_in."""
+    if r <= r_in:
+        return 0.0
+    return r**-0.75 * (1.0 - math.sqrt(r_in / r)) ** 0.25
+
+
+@njit(cache=True)
+def disk_temperature(r, r_in, t_peak):
+    """Temperatura do disco no raio r: T(r) = T_pico · f(r) / f(r_pico).
+
+    Perfil simplificado da seção 3.6, com f(r) = r^(−3/4) · (1 − √(r_in/r))^(1/4). Vale
+    T = 0 em r_in (e dentro dele) e T = T_pico em r_pico = (49/36)·r_in, que é o máximo.
+    """
+    return t_peak * _disk_profile(r, r_in) / _disk_profile(peak_radius(r_in), r_in)

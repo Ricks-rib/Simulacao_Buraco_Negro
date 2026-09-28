@@ -3,6 +3,9 @@
 A medida da sombra renderiza só a linha central (altura 1, linha em q = 0) com um FOV
 estreito escolhido por r_cam, para que o raio da sombra tenha ~200 px e o erro de
 quantização (±0,5 px) fique bem abaixo da tolerância de 2%.
+
+Desde a Fase 3 o render liga o disco e usa estrelas por padrão; os testes que dependem de
+uma sombra limpa ou da paleta do xadrez pedem ``disk=NO_DISK`` e ``background="checker"``.
 """
 
 import math
@@ -16,6 +19,7 @@ from blackhole.camera import Camera, pixel_offset
 from blackhole.config import (
     CameraConfig,
     CheckerConfig,
+    ColorConfig,
     DiskConfig,
     IntegratorConfig,
     RenderConfig,
@@ -32,8 +36,8 @@ from blackhole.physics import (
     static_observer_velocity,
     trace_ray,
 )
-from blackhole.render_cpu import render, save_png
-from blackhole.scene import checker_color
+from blackhole.render_cpu import render, save_png, to_uint8
+from blackhole.scene import checker_color, encode_pixel
 
 R_CAMS = (10.0, 30.0, 100.0)
 NO_DISK = DiskConfig(enabled=False)
@@ -129,7 +133,12 @@ def test_central_pixel_is_radial_and_captured():
     status, *_ = trace_ray(camera.position, v0, 60.0, IntegratorConfig(), NO_DISK)
     assert status == CAPTURED
 
-    image = render(camera, replace(RenderConfig(), width=9, height=9))
+    image = render(
+        camera,
+        replace(RenderConfig(), width=9, height=9),
+        disk=NO_DISK,
+        background="checker",
+    )
     np.testing.assert_array_equal(image[4, 4], [0, 0, 0])
 
 
@@ -192,7 +201,7 @@ def shadow_radius_on_central_row(r_cam):
     assert camera.pixel_scale(height) == pytest.approx(scale, rel=1e-12)
 
     cfg = replace(RenderConfig(), width=SHADOW_ROW_WIDTH, height=height)
-    row = render(camera, cfg)[0]
+    row = render(camera, cfg, disk=NO_DISK, background="checker")[0]
     black = np.all(row == 0, axis=1)
     center = SHADOW_ROW_WIDTH // 2
     assert black[center]
@@ -217,7 +226,7 @@ def test_rendered_shadow_matches_synge(r_cam):
 
 def test_render_output_shape_and_background():
     cfg = replace(RenderConfig(), width=32, height=18)
-    image = render(camera_at(30.0), cfg)
+    image = render(camera_at(30.0), cfg, disk=NO_DISK, background="checker")
     assert image.shape == (18, 32, 3)
     assert image.dtype == np.uint8
     # Cantos longe da sombra: fundo (não preto).
@@ -227,18 +236,25 @@ def test_render_output_shape_and_background():
 def test_step_limit_pixels_are_black():
     cfg = replace(RenderConfig(), width=32, height=18)
     integrator = replace(IntegratorConfig(), max_steps=1)
-    image = render(camera_at(30.0), cfg, integrator=integrator)
+    image = render(
+        camera_at(30.0), cfg, integrator=integrator, disk=NO_DISK, background="checker"
+    )
     assert not image.any()
 
 
 def test_supersampling_averages_edges():
     cfg = replace(RenderConfig(), width=64, height=36)
     checker = CheckerConfig()
+    exposure = ColorConfig().exposure
+    # Paleta pela cadeia exposição → ACES → sRGB, a mesma do render (seção 3.6).
     palette = {(0, 0, 0)} | {
-        tuple(round(c * 255.0) for c in col) for col in (checker.color_a, checker.color_b)
+        tuple(to_uint8(np.array(encode_pixel(*col, exposure))))
+        for col in (checker.color_a, checker.color_b)
     }
-    plain = render(camera_at(30.0), cfg)
-    smooth = render(camera_at(30.0), replace(cfg, supersample=2))
+    plain = render(camera_at(30.0), cfg, disk=NO_DISK, background="checker")
+    smooth = render(
+        camera_at(30.0), replace(cfg, supersample=2), disk=NO_DISK, background="checker"
+    )
     plain_colors = {tuple(px) for px in plain.reshape(-1, 3)}
     smooth_colors = {tuple(px) for px in smooth.reshape(-1, 3)}
     assert plain_colors <= palette
