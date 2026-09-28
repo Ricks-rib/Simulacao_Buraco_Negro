@@ -76,3 +76,6 @@ outputs/
 .idea/
 Thumbs.db
 desktop.ini
+
+# --- Cache de skills renderizadas do BMad (regenerado a cada execução) ---
+_bmad/render/

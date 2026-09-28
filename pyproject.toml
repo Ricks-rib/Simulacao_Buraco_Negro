@@ -1,0 +1,36 @@
+[project]
+name = "blackhole"
+version = "0.1.0"
+description = "Simulação 3D em tempo real de um buraco negro de Schwarzschild por ray tracing de geodésicas nulas"
+readme = "README.md"
+authors = [
+    { name = "Ricks-rib", email = "Ricks-rib@users.noreply.github.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "matplotlib>=3.11.2",
+    "moderngl>=5.12.0",
+    "moderngl-window>=3.1.1",
+    "numba>=0.67.0",
+    "numpy>=2.5.3",
+    "pillow>=12.3.0",
+]
+
+[project.optional-dependencies]
+video = [
+    "imageio>=2.38.0",
+    "imageio-ffmpeg>=0.6.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.6,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
+
+[tool.pytest.ini_options]
+# Só a pasta tests/: evita coletar os testes internos do BMad em _bmad/scripts/tests/.
+testpaths = ["tests"]
