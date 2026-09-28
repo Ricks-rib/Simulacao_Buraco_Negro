@@ -7,8 +7,11 @@ integrada na forma cartesiana equivalente (PLANO, seção 3.2):
 
 A órbita r(φ) coincide com a da geodésica (equação de Binet u'' + u = (3/2) u²).
 
-Esta é a fonte da verdade: cada constante e fórmula usada pelo renderizador está aqui,
-e ``shaders/blackhole.frag`` a replica com um comentário ``// ver physics.py: <nome>``.
+Esta é a fonte da verdade da física: constantes, geodésica e integrador, invariantes,
+tétrade do observador estático, raio de escape e fórmula de Synge ficam aqui.
+``shaders/blackhole.frag`` replica cada uma com o comentário ``// ver physics.py: <nome>``.
+A projeção da câmera (``camera.py``) e o fundo (``scene.py``) também são replicados no
+shader, com a mesma convenção ``// ver <arquivo>.py: <nome>``.
 """
 
 import math
@@ -286,3 +289,54 @@ def deflection_angle(x0, v0, x, v, phi_swept):
     )
     beta_f = math.atan2(angular_momentum(x, v), x[0] * v[0] + x[1] * v[1] + x[2] * v[2])
     return phi_swept + beta_f - beta_i
+
+
+# --- câmera de observador estático e escape (seções 3.3 e 3.4) --------------
+
+
+@njit(cache=True)
+def static_observer_velocity(x, n):
+    """Velocidade inicial v₀ de um raio que parte de x na direção local n (tétrade 3.3).
+
+    A câmera é um observador estático em r = |x|; n é a direção unitária do pixel no
+    seu referencial local. Com r̂ = x/r, cos α = n·r̂ e n_⊥ = n − (n·r̂)·r̂:
+
+        v₀ = √(1 − r_s/r) · cos α · r̂ + n_⊥
+
+    Então h = r·sin α e E = √(1 − r_s/r), logo b = r·sin α / √(1 − r_s/r), que é a
+    fórmula de Synge. Usar n direto como v erraria o tamanho da sombra. Exige r > r_s
+    (a câmera valida isso).
+    """
+    r = math.sqrt(x[0] * x[0] + x[1] * x[1] + x[2] * x[2])
+    rx, ry, rz = x[0] / r, x[1] / r, x[2] / r
+    cos_a = n[0] * rx + n[1] * ry + n[2] * rz
+    s = math.sqrt(1.0 - R_S / r) * cos_a
+    # s·r̂ + n_⊥ = n + (s − cos α)·r̂
+    k = s - cos_a
+    return np.array([n[0] + k * rx, n[1] + k * ry, n[2] + k * rz])
+
+
+@njit(cache=True)
+def escape_radius(r_cam, r_min, factor):
+    """Raio de escape r_max = max(r_min, factor · r_cam) (seção 3.4).
+
+    Com factor > 1, a câmera nunca fica fora da região integrada.
+    """
+    return max(r_min, factor * r_cam)
+
+
+@njit(cache=True)
+def shadow_angular_radius(r):
+    """Raio angular α da sombra para um observador estático em r (fórmula de Synge).
+
+    sin α = (b_c / r) · √(1 − r_s/r), com α medido a partir da direção do centro.
+    Para r < 1,5 (dentro da esfera de fótons) a sombra cobre mais de meio céu e
+    α = π − asin(...). Definida para r > r_s.
+
+    O máximo exato de sin α é 1 (em r = 1,5); o ``min`` só absorve o arredondamento
+    de float64 ali, que daria sin α = 1 + ε e asin = NaN.
+    """
+    alpha = math.asin(min(1.0, B_CRIT / r * math.sqrt(1.0 - R_S / r)))
+    if r < R_PHOTON:
+        alpha = math.pi - alpha
+    return alpha
