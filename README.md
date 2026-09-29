@@ -36,6 +36,16 @@ O `uv sync` deixa o ambiente idêntico ao que foi pedido. Por isso, um `uv sync`
 
 As imagens e os vídeos gerados vão para `outputs/`, que fica fora do git.
 
+### Render CPU
+
+```powershell
+uv run python -m blackhole.render_cpu
+uv run python -m blackhole.render_cpu --texture --time 100
+uv run python -m blackhole.render_cpu --no-doppler --supersample 2
+```
+
+Por padrão, o disco tem o fator de desvio g da seção 3.8 do plano (Doppler e redshift): o lado que se aproxima fica mais claro e mais azul. Com o Doppler ligado, as estrelas de fundo recebem o blueshift do observador estático. Opções da Fase 5: `--no-doppler` desliga o Doppler (visual "Interstellar"), `--texture` liga a textura co-rotante do disco e `--time` dá o tempo coordenado da câmera t_obs, em unidades r_s/c, para a posição da textura. As demais opções são `--width`, `--height`, `--supersample`, `--r-cam`, `--fov`, `--inclination`, `--azimuth`, `--background`, `--no-disk`, `--exposure`, `--t-peak` e `--output`.
+
 ### App em tempo real
 
 ```powershell
@@ -45,13 +55,15 @@ uv run python -m blackhole.app --dev
 uv run python -m blackhole.app --benchmark
 ```
 
-A janela abre em 1280×720, redimensionável, e a imagem sempre preenche o buffer físico (sem tarjas, inclusive com escala DPI do Windows acima de 100%). A cena é renderizada no tamanho interno (buffer × escala) e esticada na janela com filtro linear. O HUD, no canto superior esquerdo, mostra FPS, passos, r_cam, inclinação, azimute, escala, tamanho interno e do buffer físico, exposição, disco e fundo. Se o renderer não for NVIDIA, o app avisa no console e no HUD.
+A janela abre em 1280×720, redimensionável, e a imagem sempre preenche o buffer físico (sem tarjas, inclusive com escala DPI do Windows acima de 100%). A cena é renderizada no tamanho interno (buffer × escala) e esticada na janela com filtro linear. O HUD, no canto superior esquerdo, mostra FPS, passos, r_cam, inclinação, azimute, escala, tamanho interno e do buffer físico, exposição, disco, fundo, Doppler, textura e o tempo t_obs. Se o renderer não for NVIDIA, o app avisa no console e no HUD.
 
 | Entrada | Ação |
 |---|---|
 | Arrastar com o mouse / setas | órbita ao redor do buraco negro |
 | Roda do mouse / `W` `S` | distância (2 ≤ r_cam ≤ 500, zoom proporcional à distância) |
 | `D` | disco ligado/desligado |
+| `B` | Doppler e redshift ligados/desligados (desligado = visual "Interstellar") |
+| `T` | textura co-rotante do disco ligada/desligada (os anéis internos giram mais rápido) |
 | `G` | alternância entre xadrez e estrelas |
 | `+` / `-` (inclusive no teclado numérico) | passos de integração (256 a 1024, de 128 em 128) |
 | `[` / `]` | exposição |
@@ -60,19 +72,19 @@ A janela abre em 1280×720, redimensionável, e a imagem sempre preenche o buffe
 | `F12` | captura em `outputs/captura_<data>_<hora>.png` (tamanho do buffer, escala 1,0, sem HUD) |
 | `Esc` | saída |
 
-A inclinação fica entre 1° e 179°, longe dos polos. Todos os parâmetros (sensibilidades, limites, HUD, benchmark) estão em `AppConfig`, no `config.py`.
+A inclinação fica entre 1° e 179°, longe dos polos. O app começa com o Doppler ligado e a textura desligada (`DiskConfig`). O relógio da textura avança `AppConfig.time_scale` M por segundo (40 M/s por padrão: a borda interna dá uma volta em cerca de 2,3 s). Todos os parâmetros (sensibilidades, limites, HUD, benchmark, relógio) estão em `AppConfig`, no `config.py`, e os da textura em `DiskTextureConfig`.
 
 Opções:
 
 - `--scale`: escala de resolução interna, fixa durante a execução (0,25 a 2,0; padrão 1,0). Fora da faixa, o comando sai com erro de argumento (código 2).
 - `--dev`: modo desenvolvimento. O app recompila o `blackhole.frag` (e o `fullscreen.vert`) quando o arquivo muda. Com erro de compilação, o programa anterior continua em uso e o erro é impresso no console uma vez por mudança.
-- `--benchmark`: não abre janela. Renderiza o pipeline completo (cena no FBO interno, apresentação e HUD) num alvo offscreen de 1920×1080, com 512 passos e `ctx.finish()` por quadro, descarta o aquecimento, imprime o renderer e o FPS médio e sai com 0 se o FPS for ≥ 60 (1 caso contrário). Não depende do monitor, da escala DPI nem do vsync. Confirme antes com o `check_gl` que o renderer é a NVIDIA.
+- `--benchmark`: não abre janela. Renderiza o pipeline completo (cena no FBO interno, apresentação e HUD) num alvo offscreen de 1920×1080, com 512 passos, Doppler e textura ligados e `ctx.finish()` por quadro, descarta o aquecimento, imprime o renderer e o FPS médio e sai com 0 se o FPS for ≥ 60 (1 caso contrário). Não depende do monitor, da escala DPI nem do vsync. Confirme antes com o `check_gl` que o renderer é a NVIDIA.
 
 ### Shader e comparação CPU × GPU
 
 Os shaders ficam em `src/blackhole/shaders/` (`fullscreen.vert` e `blackhole.frag`). O `blackhole.frag` replica a física de `physics.py`, a câmera de `camera.py` e a cena de `scene.py` em float32; cada função traz o comentário `// ver <arquivo>.py: <nome>`. Mudou de um lado, muda do outro.
 
-O `compare` renderiza o fundo em xadrez sem e com disco na CPU (float64) e na GPU (float32), com a mesma câmera, resolução e integrador (o preset de tempo real de `GpuConfig`), e confere o aceite da Fase 4: no máximo 1% dos pixels com diferença acima de 10/255 em algum canal e o raio da sombra igual em ±1 px. Confirme antes com o `check_gl` que o renderer é a NVIDIA.
+O `compare` renderiza o fundo em xadrez sem e com disco (Doppler de `DiskConfig`, textura desligada) na CPU (float64) e na GPU (float32), com a mesma câmera, resolução e integrador (o preset de tempo real de `GpuConfig`), e confere o aceite da Fase 4: no máximo 1% dos pixels com diferença acima de 10/255 em algum canal e o raio da sombra igual em ±1 px. Confirme antes com o `check_gl` que o renderer é a NVIDIA.
 
 ```powershell
 uv run python -m blackhole.compare

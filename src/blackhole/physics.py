@@ -7,9 +7,10 @@ integrada na forma cartesiana equivalente (PLANO, seção 3.2):
 
 A órbita r(φ) coincide com a da geodésica (equação de Binet u'' + u = (3/2) u²).
 
-Esta é a fonte da verdade da física: constantes, geodésica e integrador, invariantes,
-tétrade do observador estático, raio de escape, fórmula de Synge e perfil de temperatura
-do disco de acreção (seção 3.6) ficam aqui. A colorimetria (corpo negro, tone mapping,
+Esta é a fonte da verdade da física: constantes, geodésica e integrador (com o atraso da
+luz Δt, seção 3.9), invariantes, tétrade do observador estático, raio de escape, fórmula
+de Synge, perfil de temperatura do disco de acreção (seção 3.6) e fator de desvio g do
+Doppler e redshift (seção 3.8) ficam aqui. A colorimetria (corpo negro, tone mapping,
 sRGB) e as estrelas ficam em ``scene.py``.
 ``src/blackhole/shaders/blackhole.frag`` (Fase 4) replica cada uma com o comentário
 ``// ver physics.py: <nome>``, e ``uv run python -m blackhole.compare`` confere a GPU
@@ -121,6 +122,15 @@ def _record(trace, i, x, y, z, vx, vy, vz):
 
 
 @njit(cache=True)
+def _time_rate(r, energy):
+    """dt/dλ = E/(1 − r_s/r) do fóton (atraso da luz, seção 3.9); 0 com r ≤ r_s."""
+    lapse2 = 1.0 - R_S / r
+    if lapse2 <= 0.0:
+        return 0.0
+    return energy / lapse2
+
+
+@njit(cache=True)
 def integrate_ray(
     x0,
     v0,
@@ -146,8 +156,16 @@ def integrate_ray(
     ``trace`` é um array (N, 6) que recebe o estado (x, v) após cada passo, com o estado
     inicial na linha 0, até N linhas; o render passa ``np.empty((0, 6))``.
 
-    Devolve ``(status, x, v, phi_swept, n_steps)``. ``phi_swept`` é o ângulo polar
-    percorrido no plano orbital (normal x0 × v0), desenrolado passo a passo.
+    Devolve ``(status, x, v, phi_swept, n_steps, dt_coord)``. ``phi_swept`` é o ângulo
+    polar percorrido no plano orbital (normal x0 × v0), desenrolado passo a passo.
+
+    ``dt_coord`` é o atraso da luz Δt: o tempo coordenado de Schwarzschild decorrido ao
+    longo do raio (seção 3.9). Com λ afim, dt/dλ = E/(1 − r_s/r), com E a energia no
+    infinito (invariante). A soma é por trapézio nas pontas de cada passo (erro O(dλ²));
+    no passo que cruza o disco, só a fração t do passo até o ponto de impacto. Como o
+    raio é traçado de trás para a frente, Δt > 0 e a emissão acontece em t_obs − Δt. Só
+    os raios DISK usam Δt; perto do horizonte o integrando diverge e as pontas com
+    r ≤ r_s contam 0 (o raio é capturado nesse passo).
     """
     x, y, z = x0[0], x0[1], x0[2]
     vx, vy, vz = v0[0], v0[1], v0[2]
@@ -159,9 +177,14 @@ def integrate_ray(
     h2 = lx * lx + ly * ly + lz * lz
     h = math.sqrt(h2)
 
+    # Energia no infinito E = √(|v|² − h²/r³), invariante: taxa dt/dλ = E/(1 − r_s/r).
+    r = math.sqrt(x * x + y * y + z * z)
+    energy = math.sqrt(max(vx * vx + vy * vy + vz * vz - h2 / (r * r * r), 0.0))
+    rate = _time_rate(r, energy)
+    dt_coord = 0.0
+
     # Base do plano orbital: e1 ao longo de x0, e2 = n × e1. Um raio radial (h = 0)
     # não define plano nem percorre ângulo.
-    r = math.sqrt(x * x + y * y + z * z)
     track_phi = h > 0.0
     e1x = e1y = e1z = e2x = e2y = e2z = 0.0
     if track_phi:
@@ -190,6 +213,8 @@ def integrate_ray(
                 pvx = vx + t * (nvx - vx)
                 pvy = vy + t * (nvy - vy)
                 pvz = vz + t * (nvz - vz)
+                p_rate = _time_rate(math.sqrt(px * px + pz * pz), energy)
+                dt_coord += 0.5 * t * dt * (rate + p_rate)
                 if track_phi:
                     p_raw = math.atan2(px * e2x + pz * e2z, px * e1x + pz * e1z)
                     phi_swept += _wrap_angle(p_raw - phi_raw)
@@ -200,10 +225,14 @@ def integrate_ray(
                     np.array([pvx, pvy, pvz]),
                     phi_swept,
                     i + 1,
+                    dt_coord,
                 )
 
         x, y, z, vx, vy, vz = nx, ny, nz, nvx, nvy, nvz
         r = math.sqrt(x * x + y * y + z * z)
+        new_rate = _time_rate(r, energy)
+        dt_coord += 0.5 * dt * (rate + new_rate)
+        rate = new_rate
         if track_phi:
             new_raw = math.atan2(x * e2x + y * e2y + z * e2z, x * e1x + y * e1y + z * e1z)
             phi_swept += _wrap_angle(new_raw - phi_raw)
@@ -211,11 +240,32 @@ def integrate_ray(
         _record(trace, i + 1, x, y, z, vx, vy, vz)
 
         if r < R_S:
-            return CAPTURED, np.array([x, y, z]), np.array([vx, vy, vz]), phi_swept, i + 1
+            return (
+                CAPTURED,
+                np.array([x, y, z]),
+                np.array([vx, vy, vz]),
+                phi_swept,
+                i + 1,
+                dt_coord,
+            )
         if r > r_max and x * vx + y * vy + z * vz > 0.0:
-            return ESCAPED, np.array([x, y, z]), np.array([vx, vy, vz]), phi_swept, i + 1
+            return (
+                ESCAPED,
+                np.array([x, y, z]),
+                np.array([vx, vy, vz]),
+                phi_swept,
+                i + 1,
+                dt_coord,
+            )
 
-    return MAX_STEPS, np.array([x, y, z]), np.array([vx, vy, vz]), phi_swept, max_steps
+    return (
+        MAX_STEPS,
+        np.array([x, y, z]),
+        np.array([vx, vy, vz]),
+        phi_swept,
+        max_steps,
+        dt_coord,
+    )
 
 
 _NO_TRACE = np.empty((0, 6))
@@ -375,3 +425,57 @@ def disk_temperature(r, r_in, t_peak):
     T = 0 em r_in (e dentro dele) e T = T_pico em r_pico = (49/36)·r_in, que é o máximo.
     """
     return t_peak * _disk_profile(r, r_in) / _disk_profile(peak_radius(r_in), r_in)
+
+
+# --- Doppler e redshift (seção 3.8) -----------------------------------------
+
+# Órbita circular em Schwarzschild: u^t = 1/√(1 − 3M/r). O coeficiente 3M = 1,5 é o
+# raio da esfera de fótons (as órbitas circulares de partículas só existem fora dela).
+CIRCULAR_ORBIT_COEFF = 3.0 * M
+
+
+@njit(cache=True)
+def keplerian_omega(r):
+    """Velocidade angular kepleriana Ω(r) = dφ/dt = √(M/r³) (seção 3.1), no sentido de +y.
+
+    Em Schwarzschild a lei de Kepler vale exatamente em tempo coordenado t. O ângulo φ
+    que cresce com a rotação é φ = atan2(−z, x): o momento angular +y leva x̂ para −ẑ.
+    """
+    return math.sqrt(M / (r * r * r))
+
+
+@njit(cache=True)
+def static_blueshift(r_cam):
+    """Blueshift g_∞ = 1/√(1 − r_s/r_cam) da luz vinda do infinito, visto pela câmera.
+
+    Um fóton de energia E no infinito chega ao observador estático em r_cam com energia
+    local E/√(1 − r_s/r_cam). É o fator das estrelas de fundo e o denominador de g no disco.
+    """
+    return 1.0 / math.sqrt(1.0 - R_S / r_cam)
+
+
+@njit(cache=True)
+def redshift_factor(r, r_cam, l_y, energy):
+    """Fator de desvio g = ν_obs/ν_em do gás em órbita kepleriana no raio r (seção 3.8).
+
+        g = √(1 − 1,5/r) / [ √(1 − 1/r_cam) · (1 − Ω(r)·λ) ],    λ = −L_y/E
+
+    Derivação: a 4-velocidade do gás é u_em = u^t (1, 0, 0, Ω), com u^t = 1/√(1 − 3M/r)
+    pela normalização u·u = −1 e Ω² r² = M/r. Para o fóton físico, com energia E e
+    momento axial L no infinito, −p·u_em = u^t (E − Ω L) e o observador estático em
+    r_cam mede −p·u_obs = E/√(1 − r_s/r_cam). Logo g = √(1 − 3M/r) / [√(1 − r_s/r_cam)
+    · (1 − Ω L/E)].
+
+    - √(1 − 1,5/r) = 1/u^t: redshift gravitacional e Doppler transverso;
+    - (1 − Ω·λ): Doppler longitudinal; o lado que se aproxima tem λ > 0 e g > 1;
+    - 1/√(1 − 1/r_cam): blueshift da luz que cai até o observador estático.
+
+    ``l_y`` e ``energy`` são L_y = (x × v)·ŷ e E do raio traçado (invariantes, em
+    qualquer ponto dele). O raio é traçado de trás para a frente: o fóton físico tem
+    momento −v, então L = −L_y e λ = L/E = −L_y/E. Vale para r > 1,5 (o disco começa na
+    ISCO, r = 3).
+    """
+    lam = -l_y / energy
+    return math.sqrt(1.0 - CIRCULAR_ORBIT_COEFF / r) / (
+        math.sqrt(1.0 - R_S / r_cam) * (1.0 - keplerian_omega(r) * lam)
+    )

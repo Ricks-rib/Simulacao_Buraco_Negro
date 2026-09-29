@@ -29,6 +29,7 @@ from blackhole.app import (
     render_hud_image,
 )
 from blackhole.config import AppConfig, CameraConfig, GLCheckConfig, GpuConfig
+from blackhole.physics import M
 from blackhole.render_gpu import GpuRenderer, shader_path
 
 APP = AppConfig()
@@ -183,9 +184,17 @@ def test_toggles_and_reset():
     controls = Controls(APP)
     view = controls.view
     disk, background, hud = view.disk_enabled, view.background, view.hud_visible
-    for action in ("toggle_disk", "toggle_background", "toggle_hud"):
+    doppler, texture = view.doppler, view.texture
+    for action in (
+        "toggle_disk",
+        "toggle_background",
+        "toggle_hud",
+        "toggle_doppler",
+        "toggle_texture",
+    ):
         assert controls.apply(action)
     assert (view.disk_enabled, view.hud_visible) == (not disk, not hud)
+    assert (view.doppler, view.texture) == (not doppler, not texture)
     assert view.background != background
     controls.apply("toggle_background")
     assert view.background == background
@@ -203,6 +212,18 @@ def test_toggles_and_reset():
     # R só volta a câmera; a vista fica como estava.
     assert view.max_steps == GPU.integrator.max_steps + APP.steps_increment
     assert not controls.apply("fly")
+
+
+def test_doppler_texture_defaults_and_clock():
+    """Doppler começa ligado e a textura desligada (DiskConfig); o relógio avança
+    time_scale M por segundo e o R não o zera."""
+    controls = Controls(APP)
+    view = controls.view
+    assert (view.doppler, view.texture, view.time) == (True, False, 0.0)
+    view.advance_time(0.5, APP)
+    assert view.time == pytest.approx(APP.time_scale * M * 0.5)
+    controls.apply("reset")
+    assert view.time == pytest.approx(APP.time_scale * M * 0.5)
 
 
 # --- teclado -----------------------------------------------------------------
@@ -224,6 +245,10 @@ def test_toggles_and_reset():
         ("H", "toggle_hud"),
         ("r", "reset"),
         ("R", "reset"),
+        ("b", "toggle_doppler"),
+        ("B", "toggle_doppler"),
+        ("t", "toggle_texture"),
+        ("T", "toggle_texture"),
     ],
 )
 def test_char_action_mapping(char, action):
@@ -308,6 +333,9 @@ def test_hud_lines_show_required_fields():
         "exposicao",
         "disco",
         "fundo",
+        "doppler ligado",
+        "textura desligada",
+        "t 0.0",
     ):
         assert needle in text, needle
     assert lines[-1] == ("AVISO: GPU errada", True)
@@ -351,6 +379,9 @@ def test_pipeline_scale_one_matches_gpu_renderer(ctx, pipeline):
         background=view.background,
         disk_enabled=view.disk_enabled,
         exposure=view.exposure,
+        doppler=view.doppler,
+        texture=view.texture,
+        time=view.time,
     )
     np.testing.assert_array_equal(frame, renderer.render())
 
@@ -483,9 +514,9 @@ def test_reload_rejects_program_without_frame_uniform(ctx, shader_copy):
 
         frag = folder / gpu.fragment_shader
         good = frag.read_text(encoding="utf-8")
-        use = "encode_pixel(shade_sample(status, x, v), u_exposure)"
+        use = "encode_pixel(shade_sample(status, x, v, dt_coord), u_exposure)"
         assert use in good
-        hardcoded = good.replace(use, "encode_pixel(shade_sample(status, x, v), 1.0)")
+        hardcoded = good.replace(use, "encode_pixel(shade_sample(status, x, v, dt_coord), 1.0)")
         frag.write_text(hardcoded, encoding="utf-8")
         program = renderer.program
         assert not renderer.reload()

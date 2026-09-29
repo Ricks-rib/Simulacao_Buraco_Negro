@@ -85,6 +85,12 @@ PORTED = {
         "escape_radius",
         "disk_temperature",
         "peak_radius",
+        "_time_rate",
+        "energy_at_infinity",
+        "axial_angular_momentum",
+        "keplerian_omega",
+        "static_blueshift",
+        "redshift_factor",
     ),
     scene: (
         "checker_color",
@@ -98,6 +104,8 @@ PORTED = {
         "cell_hash",
         "hash_to_unit",
         "star_radiance",
+        "periodic_value_noise",
+        "disk_texture",
     ),
     camera_mod: ("pixel_offset", "pixel_direction"),
     render_cpu: ("shade_sample",),
@@ -129,6 +137,7 @@ def test_frag_constants_match_python():
         "M": physics.M,
         "ACCEL_COEFF": physics.ACCEL_COEFF,
         "PEAK_RADIUS_RATIO": physics.PEAK_RADIUS_RATIO,
+        "CIRCULAR_ORBIT_COEFF": physics.CIRCULAR_ORBIT_COEFF,
         "CAPTURED": physics.CAPTURED,
         "ESCAPED": physics.ESCAPED,
         "DISK": physics.DISK,
@@ -148,6 +157,9 @@ def test_frag_constants_match_python():
         "LOWBIAS32_M1": int(scene.LOWBIAS32_M1),
         "LOWBIAS32_M2": int(scene.LOWBIAS32_M2),
         "UNIT_SCALE": scene.UNIT_SCALE,
+        "FBM_LACUNARITY": scene.FBM_LACUNARITY,
+        "FBM_GAIN": scene.FBM_GAIN,
+        "TWO_PI": scene.TWO_PI,
     }
     assert set(consts) == set(expected)
     for name, value in expected.items():

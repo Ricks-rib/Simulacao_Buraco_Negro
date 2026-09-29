@@ -27,11 +27,12 @@ from blackhole.config import (
     CheckerConfig,
     ColorConfig,
     DiskConfig,
+    DiskTextureConfig,
     GpuConfig,
     RenderConfig,
     StarfieldConfig,
 )
-from blackhole.render_cpu import BACKGROUNDS
+from blackhole.render_cpu import BACKGROUNDS, validate_texture
 from blackhole.scene import blackbody_table
 
 # Componentes do framebuffer (RGBA8, não sRGB) e da leitura (RGB).
@@ -53,6 +54,9 @@ FRAME_UNIFORMS = (
     "u_background",
     "u_disk_enabled",
     "u_exposure",
+    "u_doppler",
+    "u_disk_texture",
+    "u_time",
 )
 
 
@@ -94,10 +98,11 @@ def validate_background(background):
 class GpuRenderer:
     """Programa ModernGL do buraco negro, com uniforms vindos das dataclasses do ``config``.
 
-    Os parâmetros fixos (integrador, tabela de corpo negro, xadrez, estrelas, raio de
-    escape) são enviados na construção; ``set_uniforms`` envia os que mudam por quadro
-    (câmera, tamanho, passos, fundo, disco, exposição). ``reload`` recompila os shaders do
-    disco sem perder o programa em uso se houver erro (modo dev do app).
+    Os parâmetros fixos (integrador, tabela de corpo negro, xadrez, estrelas, textura do
+    disco, raio de escape) são enviados na construção; ``set_uniforms`` envia os que mudam
+    por quadro (câmera, tamanho, passos, fundo, disco, exposição, Doppler, textura, tempo).
+    ``reload`` recompila os shaders do disco sem perder o programa em uso se houver erro
+    (modo dev do app).
     """
 
     def __init__(
@@ -109,6 +114,7 @@ class GpuRenderer:
         disk: DiskConfig | None = None,
         color: ColorConfig | None = None,
         starfield: StarfieldConfig | None = None,
+        texture_cfg: DiskTextureConfig | None = None,
     ):
         self.ctx = ctx
         self.gpu = GpuConfig() if gpu is None else gpu
@@ -117,6 +123,9 @@ class GpuRenderer:
         self.disk = DiskConfig() if disk is None else disk
         self.color = ColorConfig() if color is None else color
         self.starfield = StarfieldConfig() if starfield is None else starfield
+        self.texture_cfg = validate_texture(
+            DiskTextureConfig() if texture_cfg is None else texture_cfg
+        )
         # O preset precisa caber na faixa aceita; falha já na construção.
         validate_max_steps(self.gpu.integrator.max_steps, self.gpu)
 
@@ -225,6 +234,13 @@ class GpuRenderer:
         put("u_star_t_min", float(stars.t_min))
         put("u_star_t_max", float(stars.t_max))
 
+        tex = self.texture_cfg
+        put("u_tex_radial_cells", float(tex.radial_cells))
+        put("u_tex_azimuthal_cells", int(tex.azimuthal_cells))
+        put("u_tex_octaves", int(tex.octaves))
+        put("u_tex_contrast", float(tex.contrast))
+        put("u_tex_seed", int(tex.seed))
+
     # --- por quadro ---------------------------------------------------------
 
     def set_uniforms(
@@ -236,13 +252,17 @@ class GpuRenderer:
         background: str | None = None,
         disk_enabled: bool | None = None,
         exposure: float | None = None,
+        doppler: bool | None = None,
+        texture: bool | None = None,
+        time: float = 0.0,
     ):
-        """Envia câmera, tamanho, passos, fundo, disco e exposição.
+        """Envia câmera, tamanho, passos, fundo, disco, exposição, Doppler, textura e tempo.
 
         Omitidos, ``max_steps`` vem de ``GpuConfig.integrator``, ``background`` de
-        ``RenderConfig``, ``disk_enabled`` de ``DiskConfig`` e ``exposure`` de
-        ``ColorConfig``. Levanta ``ValueError`` com passos fora de [256, 1024], fundo
-        desconhecido ou tamanho < 1.
+        ``RenderConfig``, ``disk_enabled``, ``doppler`` e ``texture`` de ``DiskConfig`` e
+        ``exposure`` de ``ColorConfig``. ``time`` é o tempo coordenado t_obs da câmera
+        (unidades r_s/c), usado pela textura. Levanta ``ValueError`` com passos fora de
+        [256, 1024], fundo desconhecido, tempo não finito ou tamanho < 1.
         """
         max_steps = self.gpu.integrator.max_steps if max_steps is None else max_steps
         max_steps = validate_max_steps(max_steps, self.gpu)
@@ -251,6 +271,11 @@ class GpuRenderer:
         )
         disk_enabled = self.disk.enabled if disk_enabled is None else bool(disk_enabled)
         exposure = self.color.exposure if exposure is None else float(exposure)
+        doppler = self.disk.doppler if doppler is None else bool(doppler)
+        texture = self.disk.texture if texture is None else bool(texture)
+        time = float(time)
+        if not math.isfinite(time):
+            raise ValueError(f"tempo precisa ser finito, recebido {time!r}")
         width, height = int(width), int(height)
         if width < 1 or height < 1:
             raise ValueError("a imagem precisa de largura e altura ≥ 1")
@@ -266,6 +291,9 @@ class GpuRenderer:
             "u_background": int(BACKGROUNDS[background]),
             "u_disk_enabled": disk_enabled,
             "u_exposure": exposure,
+            "u_doppler": doppler,
+            "u_disk_texture": texture,
+            "u_time": time,
         }
         for name in FRAME_UNIFORMS:
             self._set(name, values[name])

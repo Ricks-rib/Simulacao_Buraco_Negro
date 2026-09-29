@@ -17,8 +17,12 @@ Uso::
     uv run python -m blackhole.app --benchmark     # FPS em 1920x1080 offscreen; sai com 0 ou 1
 
 Controles: arrastar com o mouse ou setas (órbita), roda ou W/S (distância), D (disco),
-G (xadrez/estrelas), + / - (passos), [ / ] (exposição), H (HUD), R (câmera inicial),
-F12 (captura em ``outputs/``), Esc (sair).
+B (Doppler e redshift), T (textura co-rotante do disco), G (xadrez/estrelas), + / -
+(passos), [ / ] (exposição), H (HUD), R (câmera inicial), F12 (captura em ``outputs/``),
+Esc (sair).
+
+O relógio da textura é o tempo coordenado t_obs da câmera, que avança
+``AppConfig.time_scale`` M por segundo real (frame_time limitado a ``max_input_dt_s``).
 """
 
 import argparse
@@ -44,6 +48,7 @@ from blackhole.config import (
     GpuConfig,
     RenderConfig,
 )
+from blackhole.physics import M
 from blackhole.render_cpu import BACKGROUNDS, save_png
 from blackhole.render_gpu import GpuRenderer, shader_path
 
@@ -61,14 +66,23 @@ CHAR_ACTIONS = {
     "−": "steps_down",
     "[": "exposure_down",
     "]": "exposure_up",
+    "b": "toggle_doppler",
     "d": "toggle_disk",
     "g": "toggle_background",
     "h": "toggle_hud",
     "r": "reset",
+    "t": "toggle_texture",
 }
 
 # Nome do fundo no HUD (a fonte padrão do Pillow só tem ASCII e "°": sem acentos).
 BACKGROUND_LABELS = {"checker": "xadrez", "stars": "estrelas"}
+
+
+def on_off(flag, feminine=False):
+    """Estado de um modo no HUD (ASCII)."""
+    if feminine:
+        return "ligada" if flag else "desligada"
+    return "ligado" if flag else "desligado"
 
 
 # --- lógica pura (sem GL) -----------------------------------------------------
@@ -153,13 +167,17 @@ class OrbitState:
 
 @dataclass
 class ViewState:
-    """Parâmetros de render ajustados pelo teclado: passos, exposição, fundo, disco, HUD."""
+    """Parâmetros de render ajustados pelo teclado (passos, exposição, fundo, disco, HUD,
+    Doppler, textura) e o relógio da textura (tempo coordenado t_obs, unidades r_s/c)."""
 
     max_steps: int
     exposure: float
     background: str
     disk_enabled: bool
     hud_visible: bool
+    doppler: bool
+    texture: bool
+    time: float = 0.0
 
     @classmethod
     def initial(
@@ -176,7 +194,13 @@ class ViewState:
             background=render_cfg.background,
             disk_enabled=bool(disk.enabled),
             hud_visible=bool(app.hud_visible),
+            doppler=bool(disk.doppler),
+            texture=bool(disk.texture),
         )
+
+    def advance_time(self, dt_s, app: AppConfig):
+        """Avança o relógio da textura: t ← t + time_scale·M·dt (time_scale em M/s)."""
+        self.time += app.time_scale * M * dt_s
 
     def change_steps(self, direction, app: AppConfig, gpu: GpuConfig):
         """± ``steps_increment``, limitado a [min_steps, max_steps_cap] (256 a 1024)."""
@@ -234,6 +258,10 @@ class Controls:
             view.change_exposure(-1, app)
         elif action == "toggle_disk":
             view.disk_enabled = not view.disk_enabled
+        elif action == "toggle_doppler":
+            view.doppler = not view.doppler
+        elif action == "toggle_texture":
+            view.texture = not view.texture
         elif action == "toggle_background":
             view.toggle_background()
         elif action == "toggle_hud":
@@ -327,8 +355,13 @@ def hud_lines(controls, fps, buffer_size, scale, renderer_warning=None, dev_stat
         (f"buffer {buffer_size[0]}x{buffer_size[1]}", False),
         (f"exposicao {view.exposure:.3g}", False),
         (
-            f"disco {'ligado' if view.disk_enabled else 'desligado'}   "
+            f"disco {on_off(view.disk_enabled)}   "
             f"fundo {BACKGROUND_LABELS.get(view.background, view.background)}",
+            False,
+        ),
+        (
+            f"doppler {on_off(view.doppler)}   textura {on_off(view.texture, True)}   "
+            f"t {view.time:.1f}",
             False,
         ),
     ]
@@ -506,6 +539,9 @@ class FramePipeline:
             background=view.background,
             disk_enabled=view.disk_enabled,
             exposure=view.exposure,
+            doppler=view.doppler,
+            texture=view.texture,
+            time=view.time,
         )
         self.renderer.draw()
 
@@ -647,7 +683,9 @@ class BlackHoleApp(mglw.WindowConfig):
             return
         self.fps.tick(time_s)
         self._poll_shader(time_s)
-        self._continuous_input(clamp(frame_time, 0.0, self.app_cfg.max_input_dt_s))
+        dt = clamp(frame_time, 0.0, self.app_cfg.max_input_dt_s)
+        self._continuous_input(dt)
+        self.controls.view.advance_time(dt, self.app_cfg)
 
         buffer_size = tuple(self.wnd.buffer_size)
         if internal_size(buffer_size, self.scale) is None:
@@ -720,6 +758,9 @@ class BlackHoleApp(mglw.WindowConfig):
                 background=view.background,
                 disk_enabled=view.disk_enabled,
                 exposure=view.exposure,
+                doppler=view.doppler,
+                texture=view.texture,
+                time=view.time,
             )
             save_png(renderer.render(), path)
         except (OSError, ValueError, moderngl.Error) as exc:
@@ -762,7 +803,9 @@ def run_benchmark(app: AppConfig | None = None, scale=None):
     """Pipeline completo (cena interna + present + HUD) num alvo offscreen.
 
     Tamanho ``benchmark_size``, ``ctx.finish()`` por quadro, aquecimento descartado.
-    Devolve 0 com FPS médio ≥ ``benchmark_target_fps``, 1 abaixo dele ou sem OpenGL 3.3.
+    Doppler e textura ficam ligados (o caso mais caro) e o relógio da textura avança
+    ``1/benchmark_target_fps`` s por quadro. Devolve 0 com FPS médio ≥
+    ``benchmark_target_fps``, 1 abaixo dele ou sem OpenGL 3.3.
     """
     app = AppConfig() if app is None else app
     scale = app.scale if scale is None else float(scale)
@@ -783,16 +826,21 @@ def run_benchmark(app: AppConfig | None = None, scale=None):
             print(f"{warning}; veja `uv run python -m blackhole.check_gl`.")
         controls = Controls(app)
         camera, view = controls.camera(), controls.view
+        view.doppler = True
+        view.texture = True
+        frame_dt = 1.0 / app.benchmark_target_fps
         pipeline = FramePipeline(ctx, app)
         target = ctx.framebuffer(color_attachments=[ctx.renderbuffer(size, components=_RGBA)])
         previous = ctx.fbo
         try:
             pipeline.hud.update(0.0, 1.0, lambda: hud_lines(controls, 0.0, size, scale, warning))
             for _ in range(app.benchmark_warmup):
+                view.advance_time(frame_dt, app)
                 pipeline.render(target, camera, view, size, scale, show_hud=view.hud_visible)
                 ctx.finish()
             start = time.perf_counter()
             for _ in range(app.benchmark_frames):
+                view.advance_time(frame_dt, app)
                 pipeline.render(target, camera, view, size, scale, show_hud=view.hud_visible)
                 ctx.finish()
             elapsed = time.perf_counter() - start
@@ -811,7 +859,7 @@ def run_benchmark(app: AppConfig | None = None, scale=None):
     ok = fps >= app.benchmark_target_fps
     print(
         f"{size[0]}x{size[1]}, escala {scale:g} (interno {inner[0]}x{inner[1]}), "
-        f"{view.max_steps} passos, {app.benchmark_frames} quadros "
+        f"{view.max_steps} passos, Doppler e textura ligados, {app.benchmark_frames} quadros "
         f"(+{app.benchmark_warmup} de aquecimento)"
     )
     print(

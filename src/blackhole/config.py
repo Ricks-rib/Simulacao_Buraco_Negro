@@ -44,6 +44,33 @@ class DiskConfig:
     enabled: bool = True
     # Temperatura no pico do perfil T(r), em kelvin, atingida em r_pico = (49/36)·r_in.
     t_peak: float = 10_000.0
+    # Fator de desvio g da seção 3.8 (Doppler + redshift) no disco e blueshift g_∞ do
+    # observador estático nas estrelas. Desligado = visual "Interstellar" (tecla B no app).
+    doppler: bool = True
+    # Textura procedural de emissividade co-rotante com Ω(r) (DiskTextureConfig). A
+    # referência da CPU fica sem textura; tecla T no app, --texture no render CPU.
+    texture: bool = False
+
+
+@dataclass(frozen=True)
+class DiskTextureConfig:
+    """Textura procedural do disco (PLANO, seção 3.9): ruído de valor em (ln r, φ').
+
+    φ' = φ − Ω(r)·t_emit é o ângulo no referencial que gira com o gás. A emissividade é
+    multiplicada por m = 1 + contraste·(2·fbm − 1) ∈ [1 − contraste, 1 + contraste].
+    """
+
+    # Células por unidade de ln r na primeira oitava (≈ 17 células radiais de r = 3 a 12).
+    radial_cells: float = 12.0
+    # Células azimutais por volta na primeira oitava (inteiro: a textura é periódica em φ).
+    # Com 24 células, a célula tem arco 2πr/24 ≈ 0,26·r contra Δr ≈ r/12: alongada em φ.
+    azimuthal_cells: int = 24
+    # Oitavas do fbm (cada uma dobra as células nos dois eixos e divide a amplitude por 2).
+    octaves: int = 4
+    # Contraste c da emissividade, em [0, 1].
+    contrast: float = 0.7
+    # Semente do hash (inteiro de 32 bits sem sinal).
+    seed: int = 4242
 
 
 @dataclass(frozen=True)
@@ -200,8 +227,14 @@ class AppConfig:
     # Zoom multiplicativo: r ← r·f^(∓1) por clique da roda e r ← r·exp(∓taxa·dt) com W/S.
     zoom_wheel_factor: float = 1.1
     zoom_key_rate: float = 1.0
-    # Maior frame_time usado nos controles contínuos (evita saltos depois de uma pausa), s.
+    # Maior frame_time usado nos controles contínuos e no relógio (evita saltos depois de
+    # uma pausa), s.
     max_input_dt_s: float = 0.1
+
+    # Relógio da textura do disco: tempo coordenado t_obs, em unidades de M, que passa por
+    # segundo real. Com 40 M/s (20 r_s/c por segundo), a borda interna (r = 3, período
+    # 2π/Ω ≈ 46 r_s/c) dá uma volta em ≈ 2,3 s e a externa (r = 12) em ≈ 18 s.
+    time_scale: float = 40.0
 
     # Passos: incremento de + / − (a faixa é [GpuConfig.min_steps, max_steps_cap]).
     steps_increment: int = 128

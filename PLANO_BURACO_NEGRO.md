@@ -129,6 +129,14 @@ g = √(1 − 1,5/r) / [ √(1 − 1/r_cam) · (1 − Ω(r) · λ) ]
 - Brilho ∝ g⁴ · T⁴ (intensidade bolométrica).
 - Efeito esperado: lado do disco que se aproxima mais brilhante e azulado.
 
+### 3.9 Textura do disco, atraso da luz e blueshift das estrelas (Fase 5)
+
+- **Textura:** fator de emissividade m = 1 + c · (2 · fbm − 1) ∈ [1 − c, 1 + c], que multiplica o brilho do disco sem mudar a temperatura (a cor segue a seção 3.6). O fbm é ruído de valor (hash lowbias32 da seção 3.7, interpolação suave) em (ln r, φ'), com células alongadas em φ e número inteiro de células por volta, o que o torna periódico em φ. Parâmetros em `DiskTextureConfig`.
+- **Rotação:** φ = atan2(−z, x) cresce no sentido da rotação, e a textura é avaliada no ângulo co-rotante φ' = φ − Ω(r) · t_emit. Os anéis internos giram mais rápido e o padrão se cisalha em espirais.
+- **Atraso da luz:** t_emit = t_obs − Δt, com Δt = ∫ E/(1 − 1/r) dλ acumulado ao longo de cada raio (trapézio por passo; no passo do disco, só a fração até o impacto). Para um raio radial, Δt = |Δr| + |ln((r₂ − 1)/(r₁ − 1))|.
+- **Estrelas:** com o Doppler ligado, a luz do fundo chega à câmera estática com blueshift g_∞ = 1/√(1 − 1/r_cam): T_obs = g_∞ · T e brilho × g_∞⁴. O xadrez de depuração não muda.
+- Padrões: Doppler ligado e textura desligada (`DiskConfig`). No app, `B` alterna o Doppler e `T` a textura; o relógio t_obs avança `AppConfig.time_scale` M por segundo.
+
 ## 4. Stack
 
 - `uv`: gerenciamento do Python, do ambiente virtual e das dependências (sem `pip` nem `venv` manual).

@@ -3,9 +3,13 @@
 - Fundo de depuração: xadrez em latitude/longitude em torno de +y.
 - Corpo negro: tabela de cor em sRGB linear com luminância Y = 1, construída uma vez em
   NumPy (Planck × CMF CIE 1931) e interpolada em ln T dentro dos kernels.
-- Radiância do disco: (T/T_pico)⁴ · rgb(T), com T(r) de ``physics.disk_temperature``.
+- Radiância do disco: m · (g·T/T_pico)⁴ · rgb(g·T), com T(r) de
+  ``physics.disk_temperature``, o fator de desvio g da seção 3.8 e a emissividade m da
+  textura co-rotante (seção 3.9); g = m = 1 sem Doppler e sem textura.
 - Campo estelar procedural: hash inteiro de 32 bits da célula de direção, reproduzível em
-  GLSL 3.3 com ``uint``.
+  GLSL 3.3 com ``uint``; com Doppler, blueshift g_∞ do observador estático.
+- Textura do disco: ruído de valor periódico em φ, com o mesmo hash, no referencial que
+  gira com Ω(r).
 - Cadeia de saída: exposição → ACES aproximado (Narkowicz) → gama sRGB, a mesma para o
   disco e para o fundo.
 
@@ -18,7 +22,7 @@ import numpy as np
 from numba import njit
 
 from blackhole.config import ColorConfig
-from blackhole.physics import disk_temperature
+from blackhole.physics import disk_temperature, keplerian_omega
 
 # --- xadrez de depuração (seção 3.7) ----------------------------------------
 
@@ -134,16 +138,20 @@ def blackbody_rgb(temperature, table, t_min, t_max):
 
 
 @njit(cache=True)
-def disk_radiance(r, r_in, t_peak, table, t_min, t_max):
-    """Radiância linear do disco no raio r: (T/T_pico)⁴ · rgb(T) (antes da exposição).
+def disk_radiance(r, r_in, t_peak, table, t_min, t_max, g, emissivity):
+    """Radiância linear observada do disco no raio r (antes da exposição).
 
-    T(r) vem de ``physics.disk_temperature``. A emissão é a mesma nas duas faces e não
-    depende da direção do raio (sem Doppler nem redshift, que são da Fase 5). Em r_in,
-    T = 0 e a radiância é 0 (preto).
+        T_obs = g·T(r),    radiância = m · (T_obs/T_pico)⁴ · rgb(T_obs)
+
+    T(r) vem de ``physics.disk_temperature`` (seção 3.6). g é o fator de desvio da seção
+    3.8 (``physics.redshift_factor``): a cor segue a temperatura observada e o brilho
+    bolométrico escala com g⁴·T⁴. m = ``emissivity`` é o fator da textura
+    (``disk_texture``), que muda só a emissividade, não a temperatura. Com g = m = 1 é a
+    radiância da Fase 3. Em r_in, T = 0 e a radiância é 0 (preto) com qualquer g.
     """
-    temperature = disk_temperature(r, r_in, t_peak)
+    temperature = g * disk_temperature(r, r_in, t_peak)
     ratio = temperature / t_peak
-    brightness = ratio * ratio * ratio * ratio
+    brightness = emissivity * ratio * ratio * ratio * ratio
     cr, cg, cb = blackbody_rgb(temperature, table, t_min, t_max)
     return brightness * cr, brightness * cg, brightness * cb
 
@@ -261,6 +269,7 @@ def star_radiance(
     table,
     t_min,
     t_max,
+    shift,
 ):
     """Radiância linear do campo estelar na direção d (não precisa ser unitária).
 
@@ -271,6 +280,10 @@ def star_radiance(
     - centro ŝ = normalize((c + ½ + jitter·(r₁₂₃ − ½))/N);
     - intensidade log-uniforme (r₄) e temperatura log-uniforme (r₅) → ``blackbody_rgb``;
     - perfil gaussiano na corda: I · exp(−|d̂ − ŝ|²/(2σ²)).
+
+    ``shift`` é o fator de desvio da luz vinda do infinito até a câmera: com Doppler,
+    g_∞ = ``physics.static_blueshift(r_cam)``; sem ele, 1. A temperatura observada é
+    shift·T e o brilho é multiplicado por shift⁴ (como no disco, seção 3.8).
 
     Só a própria célula é avaliada.
     """
@@ -304,7 +317,77 @@ def star_radiance(
     chord2 = ex * ex + ey * ey + ez * ez
 
     intensity = intensity_min * (intensity_max / intensity_min) ** r_intensity
-    temperature = star_t_min * (star_t_max / star_t_min) ** r_temperature
-    value = intensity * math.exp(-chord2 / (2.0 * sigma * sigma))
+    temperature = shift * star_t_min * (star_t_max / star_t_min) ** r_temperature
+    shift2 = shift * shift
+    value = shift2 * shift2 * intensity * math.exp(-chord2 / (2.0 * sigma * sigma))
     cr, cg, cb = blackbody_rgb(temperature, table, t_min, t_max)
     return value * cr, value * cg, value * cb
+
+
+# --- textura do disco (seção 3.9) -------------------------------------------
+
+# fbm: cada oitava multiplica as células por FBM_LACUNARITY (inteiro, para manter a
+# periodicidade em φ) e a amplitude por FBM_GAIN.
+FBM_LACUNARITY = 2
+FBM_GAIN = 0.5
+# Uma volta completa, em radianos.
+TWO_PI = 2.0 * math.pi
+
+
+@njit(cache=True)
+def periodic_value_noise(u, w, n_w, octave, seed):
+    """Ruído de valor suave em [0, 1) na grade inteira (u, w), periódico em w com período n_w.
+
+    Os valores dos vértices saem de ``cell_hash(i, j mod n_w, octave, seed)`` e são
+    interpolados com a curva suave s(f) = f²(3 − 2f) (contínua, com derivada contínua).
+    w é levado a [0, n_w) por w − n_w·⌊w/n_w⌋ e o vizinho de j = n_w − 1 é j = 0, então
+    o ruído é contínuo e periódico: nada muda ao trocar w por w + n_w.
+    """
+    w = w - n_w * math.floor(w / n_w)
+    fu = u - math.floor(u)
+    fw = w - math.floor(w)
+    i0 = int(math.floor(u))
+    j0 = int(math.floor(w)) % n_w
+    j1 = (j0 + 1) % n_w
+    v00 = hash_to_unit(cell_hash(i0, j0, octave, seed))
+    v10 = hash_to_unit(cell_hash(i0 + 1, j0, octave, seed))
+    v01 = hash_to_unit(cell_hash(i0, j1, octave, seed))
+    v11 = hash_to_unit(cell_hash(i0 + 1, j1, octave, seed))
+    su = fu * fu * (3.0 - 2.0 * fu)
+    sw = fw * fw * (3.0 - 2.0 * fw)
+    a = v00 + su * (v10 - v00)
+    b = v01 + su * (v11 - v01)
+    return a + sw * (b - a)
+
+
+@njit(cache=True)
+def disk_texture(r, phi, t_emit, radial_cells, azimuthal_cells, octaves, contrast, seed):
+    """Fator de emissividade m ∈ [1 − c, 1 + c] da textura co-rotante do disco (seção 3.9).
+
+    O gás no raio r gira com Ω(r) (``physics.keplerian_omega``), então a textura é fixa
+    no ângulo co-rotante φ' = φ − Ω(r)·t_emit, com φ = atan2(−z, x) (cresce no sentido
+    da rotação) e t_emit = t_obs − Δt o tempo coordenado da emissão. Como Ω cai com r,
+    os anéis internos giram mais rápido e a textura se cisalha em espirais.
+
+    fbm = Σ_k a_k·ruído_k / Σ_k a_k, com a_k = FBM_GAIN^k, e a oitava k usa
+    radial_cells·L^k células por unidade de ln r e azimuthal_cells·L^k células por volta
+    (L = FBM_LACUNARITY), sempre um número inteiro: periódico em φ. m = 1 + c·(2·fbm − 1).
+    Exige octaves ≥ 1 (validado por quem chama).
+    """
+    u = math.log(r) * radial_cells
+    turns = (phi - keplerian_omega(r) * t_emit) / TWO_PI
+    # Só a fração da volta importa (n_w é inteiro); reduzir antes de multiplicar por n_w
+    # preserva a precisão com t grande (float32 na GPU).
+    turns -= math.floor(turns)
+    total = 0.0
+    norm = 0.0
+    amplitude = 1.0
+    scale = 1
+    for k in range(octaves):
+        n_w = azimuthal_cells * scale
+        total += amplitude * periodic_value_noise(u * scale, turns * n_w, n_w, k, seed)
+        norm += amplitude
+        amplitude *= FBM_GAIN
+        scale *= FBM_LACUNARITY
+    fbm = total / norm
+    return 1.0 + contrast * (2.0 * fbm - 1.0)

@@ -130,7 +130,9 @@ def test_blackbody_clamps_above_table(table, temperature):
 
 def radiance(r, table, t_peak=DISK_CFG.t_peak):
     return np.array(
-        disk_radiance(r, DISK_CFG.r_in, t_peak, table, COLOR.bb_t_min, COLOR.bb_t_max)
+        disk_radiance(
+            r, DISK_CFG.r_in, t_peak, table, COLOR.bb_t_min, COLOR.bb_t_max, 1.0, 1.0
+        )
     )
 
 
@@ -257,6 +259,7 @@ def star(d, table, seed=STARS.seed):
             table,
             COLOR.bb_t_min,
             COLOR.bb_t_max,
+            1.0,
         )
     )
 

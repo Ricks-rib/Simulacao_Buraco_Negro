@@ -9,6 +9,9 @@ standalone (sem janela), e mede os critérios de aceite:
 - na cena sem disco, raio da sombra (horizontal e vertical, pela faixa preta que passa
   pelo pixel central) igual em ±``shadow_tolerance_px``.
 
+O disco usa o Doppler de ``DiskConfig.doppler`` (ligado por padrão, Fase 5a) e a textura
+desligada (``compare_scene`` aceita ``texture`` e ``t_obs`` para os testes).
+
 Grava em ``outputs/`` três PNGs (CPU, GPU e diferença), cada um com as duas cenas
 empilhadas (sem disco em cima). Na diferença, |Δ| máximo por pixel aparece em cinza
 amplificado e os pixels ruins em vermelho.
@@ -107,12 +110,18 @@ def compare_scene(
     disk_enabled,
     cfg: CompareConfig,
     name="",
+    texture=False,
+    t_obs=0.0,
 ):
-    """Renderiza uma cena na CPU e na GPU com o mesmo integrador e compara as imagens."""
+    """Renderiza uma cena na CPU e na GPU com o mesmo integrador e compara as imagens.
+
+    O Doppler vem de ``renderer.disk.doppler``; a textura fica desligada, a menos que
+    ``texture`` seja dado (com o tempo ``t_obs`` da câmera).
+    """
     gpu_cfg = renderer.gpu
     integrator = replace(gpu_cfg.integrator, max_steps=max_steps)
     render_cfg = replace(renderer.render_cfg, width=width, height=height, supersample=1)
-    disk = replace(renderer.disk, enabled=disk_enabled)
+    disk = replace(renderer.disk, enabled=disk_enabled, texture=bool(texture))
 
     start = time.perf_counter()
     cpu = render(
@@ -124,6 +133,8 @@ def compare_scene(
         color=renderer.color,
         starfield=renderer.starfield,
         background=cfg.background,
+        texture_cfg=renderer.texture_cfg,
+        t_obs=t_obs,
     )
     cpu_time = time.perf_counter() - start
 
@@ -134,6 +145,9 @@ def compare_scene(
         max_steps=max_steps,
         background=cfg.background,
         disk_enabled=disk_enabled,
+        doppler=disk.doppler,
+        texture=disk.texture,
+        time=t_obs,
     )
     # O primeiro draw pode incluir a compilação preguiçosa do driver: fica fora do tempo.
     renderer.render()
@@ -259,7 +273,8 @@ def main(argv=None):
     print(
         f"{args.width}x{args.height}, r_cam = {camera.r_cam:g}, inclinação = "
         f"{args.inclination:g}°, {args.steps} passos, k = {integ.step_factor:g} "
-        f"(x{integ.photon_step_factor:g} na esfera de fótons), fundo {cmp_cfg.background}"
+        f"(x{integ.photon_step_factor:g} na esfera de fótons), fundo {cmp_cfg.background}, "
+        f"Doppler {'ligado' if DiskConfig().doppler else 'desligado'}, sem textura"
     )
     limit = 100.0 * cmp_cfg.max_bad_fraction
     for res in results:

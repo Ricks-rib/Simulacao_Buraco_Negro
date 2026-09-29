@@ -50,7 +50,7 @@ def shoot(b, disk=NO_DISK, integrator=TEST_INTEGRATOR, trace=None):
 
 
 def deflection(b):
-    x0, v0, (status, x, v, phi_swept, _) = shoot(b)
+    x0, v0, (status, x, v, phi_swept, _, _) = shoot(b)
     assert status == ESCAPED
     return deflection_angle(x0, v0, x, v, phi_swept)
 
@@ -92,13 +92,13 @@ def test_invariants_of_known_state():
 
 
 def test_b_255_is_captured():
-    _, _, (status, x, _, _, _) = shoot(2.55)
+    _, _, (status, x, _, _, _, _) = shoot(2.55)
     assert status == CAPTURED
     assert np.linalg.norm(x) < R_S
 
 
 def test_b_265_escapes():
-    _, _, (status, x, v, _, _) = shoot(2.65)
+    _, _, (status, x, v, _, _, _) = shoot(2.65)
     assert status == ESCAPED
     assert np.linalg.norm(x) > R_MAX
     assert np.dot(x, v) > 0.0
@@ -123,7 +123,7 @@ def test_strong_field_deflection(delta):
 @pytest.mark.parametrize("sign, expected_status", [(+1.0, ESCAPED), (-1.0, CAPTURED)])
 def test_near_critical_rays_wind_more_than_4pi(sign, expected_status):
     delta = 1e-6
-    _, _, (status, _, _, phi_swept, _) = shoot(B_CRIT * (1.0 + sign * delta))
+    _, _, (status, _, _, phi_swept, _, _) = shoot(B_CRIT * (1.0 + sign * delta))
     assert status == expected_status
     assert phi_swept > 4.0 * math.pi
 
@@ -150,7 +150,7 @@ def shoot_disk_ray(x_start, trace):
 )
 def test_h_and_eps_are_conserved(shoot_fn, param):
     buffer = np.zeros((TEST_INTEGRATOR.max_steps + 1, 6))
-    _, _, _, _, n_steps = shoot_fn(param, buffer)
+    _, _, _, _, n_steps, _ = shoot_fn(param, buffer)
     states = buffer[: n_steps + 1]
     xs, vs = states[:, :3], states[:, 3:]
     h = np.linalg.norm(np.cross(xs, vs), axis=1)
@@ -165,7 +165,7 @@ def test_h_and_eps_are_conserved(shoot_fn, param):
 
 def test_disk_hit_stops_at_interpolated_crossing():
     buffer = np.zeros((TEST_INTEGRATOR.max_steps + 1, 6))
-    status, x, v, _, n_steps = shoot_disk_ray(8.0, buffer)
+    status, x, v, _, n_steps, _ = shoot_disk_ray(8.0, buffer)
     assert status == DISK
 
     # Refaz o último passo RK4 a partir do estado anterior ao cruzamento e confere que o
@@ -196,13 +196,13 @@ def test_disk_hit_stops_at_interpolated_crossing():
 
 
 def test_disk_miss_continues_and_escapes():
-    status, x, _, _, _ = shoot_disk_ray(20.0, None)
+    status, x, _, _, _, _ = shoot_disk_ray(20.0, None)
     assert status == ESCAPED
     assert x[1] < 0.0
 
 
 def test_step_limit_reports_max_steps():
     integrator = replace(IntegratorConfig(), max_steps=10)
-    _, _, (status, _, _, _, n_steps) = shoot(2.65, integrator=integrator)
+    _, _, (status, _, _, _, n_steps, _) = shoot(2.65, integrator=integrator)
     assert status == MAX_STEPS
     assert n_steps == 10

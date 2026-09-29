@@ -16,6 +16,7 @@ from blackhole.config import (
     CheckerConfig,
     ColorConfig,
     DiskConfig,
+    DiskTextureConfig,
     RenderConfig,
     StarfieldConfig,
 )
@@ -47,7 +48,7 @@ def fields(camera):
 
 @pytest.fixture(scope="module")
 def central_column(fields):
-    status, x, v, phi = fields
+    status, x, v, phi, _ = fields
     c = status.shape[1] // 2
     return status[:, c], np.abs(phi[:, c])
 
@@ -59,7 +60,7 @@ def test_default_camera_is_at_80_degrees(camera):
 
 
 def test_trace_fields_shapes(fields):
-    status, x, v, phi = fields
+    status, x, v, phi, _ = fields
     cfg = RenderConfig()
     assert status.shape == (cfg.height, cfg.width)
     assert x.shape == v.shape == (cfg.height, cfg.width, 3)
@@ -91,7 +92,7 @@ def test_secondary_image_below_center(central_column):
 
 
 def test_photon_ring_is_thin_band_at_shadow_edge(fields):
-    status, x, v, phi = fields
+    status, x, v, phi, _ = fields
     ring = ((status == ESCAPED) | (status == DISK)) & (np.abs(phi) >= TWO_PI)
     assert ring.any()
     b = np.array([impact_parameter(x[j, i], v[j, i]) for j, i in zip(*np.nonzero(ring))])
@@ -101,7 +102,7 @@ def test_photon_ring_is_thin_band_at_shadow_edge(fields):
 
 def test_both_disk_faces_hit_and_emit_equally(fields):
     """Face de cima (v_y < 0) e de baixo (v_y > 0) aparecem e emitem igual no mesmo raio."""
-    status, x, v, _ = fields
+    status, x, v, _, dts = fields
     hits = status == DISK
     assert np.any(v[hits][:, 1] < 0.0)
     assert np.any(v[hits][:, 1] > 0.0)
@@ -110,6 +111,7 @@ def test_both_disk_faces_hit_and_emit_equally(fields):
     disk = DiskConfig()
     checker = CheckerConfig()
     stars = StarfieldConfig()
+    tex = DiskTextureConfig()
     table = blackbody_table(color)
     j, i = np.argwhere(hits)[0]
     flipped = v[j, i] * np.array([1.0, -1.0, 1.0])
@@ -119,6 +121,7 @@ def test_both_disk_faces_hit_and_emit_equally(fields):
             DISK,
             x[j, i],
             vel,
+            dts[j, i],
             disk.r_in,
             disk.t_peak,
             table,
@@ -137,6 +140,15 @@ def test_both_disk_faces_hit_and_emit_equally(fields):
             stars.intensity_max,
             stars.t_min,
             stars.t_max,
+            False,
+            CameraConfig().r_cam,
+            0.0,
+            False,
+            tex.radial_cells,
+            tex.azimuthal_cells,
+            tex.octaves,
+            tex.contrast,
+            tex.seed,
         )
 
     assert shade(v[j, i]) == shade(flipped)
