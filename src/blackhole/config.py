@@ -3,7 +3,7 @@
 Cada fase acrescenta aqui as suas dataclasses (física, disco, câmera, qualidade, cor).
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
@@ -137,3 +137,55 @@ class StarfieldConfig:
     # Temperatura de cor, log-uniforme entre os limites, em kelvin.
     t_min: float = 2_500.0
     t_max: float = 30_000.0
+
+
+def _realtime_integrator():
+    """Preset do integrador de tempo real (Fase 4a, Decisão do integrador).
+
+    k = 0,05 fora da esfera de fótons e 0,05·0,2 = 0,01 dentro dela, com 512 passos. Os
+    padrões de ``IntegratorConfig`` (referência da CPU) não mudam.
+    """
+    return IntegratorConfig(step_factor=0.05, photon_step_factor=0.2, max_steps=512)
+
+
+@dataclass(frozen=True)
+class GpuConfig:
+    """Renderizador GPU (fragment shader GLSL 330, float32) (PLANO, Fase 4).
+
+    A GPU e as duas renderizações do ``compare`` usam o mesmo ``integrator``; o
+    ``max_steps`` dele é o limite real (uniform) e ``max_steps_cap`` é o limite de
+    compilação do laço (``#define MAX_STEPS_CAP``).
+    """
+
+    integrator: IntegratorConfig = field(default_factory=_realtime_integrator)
+    # Faixa aceita para o número de passos (uniform ``u_max_steps``).
+    min_steps: int = 256
+    max_steps_cap: int = 1024
+    # Shaders em ``src/blackhole/<shader_dir>/``, carregados por caminho relativo ao módulo.
+    shader_dir: str = "shaders"
+    vertex_shader: str = "fullscreen.vert"
+    fragment_shader: str = "blackhole.frag"
+
+
+@dataclass(frozen=True)
+class CompareConfig:
+    """Comparação CPU (float64) × GPU (float32) no fundo em xadrez (PLANO, Fase 4)."""
+
+    width: int = 800
+    height: int = 450
+    # Pixel ruim: diferença > bad_threshold (em 1/255) em algum canal.
+    bad_threshold: int = 10
+    # Fração máxima de pixels ruins por cena.
+    max_bad_fraction: float = 0.01
+    # Diferença máxima do raio da sombra, em pixels (horizontal e vertical).
+    shadow_tolerance_px: float = 1.0
+    # Fundo das duas cenas comparadas (o campo estelar não entra na comparação numérica).
+    background: str = "checker"
+    # PNG de diferença: |Δ| máximo por pixel × ganho em cinza; pixels ruins nesta cor.
+    diff_gain: float = 8.0
+    bad_color: tuple[int, int, int] = (255, 0, 0)
+    output_dir: str = "outputs"
+    # Cada PNG empilha as duas cenas: sem disco em cima, com disco embaixo.
+    cpu_name: str = "compare_cpu.png"
+    gpu_name: str = "compare_gpu.png"
+    diff_name: str = "compare_diff.png"

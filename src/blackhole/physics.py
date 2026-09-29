@@ -11,7 +11,9 @@ Esta é a fonte da verdade da física: constantes, geodésica e integrador, inva
 tétrade do observador estático, raio de escape, fórmula de Synge e perfil de temperatura
 do disco de acreção (seção 3.6) ficam aqui. A colorimetria (corpo negro, tone mapping,
 sRGB) e as estrelas ficam em ``scene.py``.
-``shaders/blackhole.frag`` replica cada uma com o comentário ``// ver physics.py: <nome>``.
+``src/blackhole/shaders/blackhole.frag`` (Fase 4) replica cada uma com o comentário
+``// ver physics.py: <nome>``, e ``uv run python -m blackhole.compare`` confere a GPU
+(float32) contra esta referência (float64).
 A projeção da câmera (``camera.py``) e o fundo (``scene.py``) também são replicados no
 shader, com a mesma convenção ``// ver <arquivo>.py: <nome>``.
 """

@@ -34,7 +34,20 @@ O `uv sync` deixa o ambiente idêntico ao que foi pedido. Por isso, um `uv sync`
 | App em tempo real | `uv run python -m blackhole.app` |
 | Comparar CPU e GPU | `uv run python -m blackhole.compare` |
 
-Os módulos de render, do app e da comparação chegam nas próximas fases. As imagens e os vídeos gerados vão para `outputs/`, que fica fora do git.
+O app em tempo real chega na Fase 4b. As imagens e os vídeos gerados vão para `outputs/`, que fica fora do git.
+
+### Shader e comparação CPU × GPU
+
+Os shaders ficam em `src/blackhole/shaders/` (`fullscreen.vert` e `blackhole.frag`). O `blackhole.frag` replica a física de `physics.py`, a câmera de `camera.py` e a cena de `scene.py` em float32; cada função traz o comentário `// ver <arquivo>.py: <nome>`. Mudou de um lado, muda do outro.
+
+O `compare` renderiza o fundo em xadrez sem e com disco na CPU (float64) e na GPU (float32), com a mesma câmera, resolução e integrador (o preset de tempo real de `GpuConfig`), e confere o aceite da Fase 4: no máximo 1% dos pixels com diferença acima de 10/255 em algum canal e o raio da sombra igual em ±1 px. Confirme antes com o `check_gl` que o renderer é a NVIDIA.
+
+```powershell
+uv run python -m blackhole.compare
+uv run python -m blackhole.compare --r-cam 10 --steps 1024
+```
+
+Opções: `--width`, `--height`, `--steps` (256 a 1024), `--r-cam` e `--inclination`. O comando imprime o renderer, as métricas e os tempos de CPU e GPU, grava `compare_cpu.png`, `compare_gpu.png` e `compare_diff.png` em `outputs/` (as duas cenas empilhadas, e os pixels ruins em vermelho na diferença) e sai com 0 dentro do aceite, 1 fora dele ou sem contexto OpenGL 3.3, ou 2 com argumentos inválidos.
 
 ## GPU dedicada (notebooks e máquinas com GPU híbrida)
 
