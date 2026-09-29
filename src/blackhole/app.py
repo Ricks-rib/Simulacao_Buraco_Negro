@@ -124,11 +124,14 @@ def internal_size(buffer_size, scale):
     return max(1, round(width * scale)), max(1, round(height * scale))
 
 
-def capture_path(output_dir, prefix, now=None):
-    """``<output_dir>/<prefix>_AAAAMMDD_HHMMSS_mmm.png`` (data e hora da captura)."""
+def capture_path(output_dir, prefix, now=None, suffix=".png"):
+    """``<output_dir>/<prefix>_AAAAMMDD_HHMMSS_mmm<suffix>`` (data e hora da captura).
+
+    ``suffix`` é ``.png`` na captura ``F12`` e ``.mp4`` no vídeo (``blackhole.record``).
+    """
     now = datetime.now() if now is None else now
     stamp = now.strftime("%Y%m%d_%H%M%S") + f"_{now.microsecond // 1000:03d}"
-    return Path(output_dir) / f"{prefix}_{stamp}.png"
+    return Path(output_dir) / f"{prefix}_{stamp}{suffix}"
 
 
 @dataclass

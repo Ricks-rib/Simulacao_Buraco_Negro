@@ -199,6 +199,7 @@ buraco_negro/
 │   ├── bloom.py          # bloom do app (cadeia de mips, glare/clássico), só GPU
 │   ├── check_gl.py       # versão OpenGL, vendor e renderer da GPU
 │   ├── compare.py        # comparação CPU × GPU (contexto sem janela)
+│   ├── record.py         # vídeo da câmera orbitando (contexto sem janela, imageio)
 │   └── shaders/
 │       ├── fullscreen.vert
 │       ├── blackhole.frag
@@ -295,7 +296,8 @@ buraco_negro/
 - Fator de desvio g da seção 3.8, com tecla `B` para ligar e desligar (o visual de Interstellar omite o Doppler de propósito).
 - Pós-processamento com bloom (seção 3.10), com teclas `L` e `K`.
 - Opcional: textura procedural no disco girando com velocidade kepleriana (disco ainda fino).
-- Gravação de vídeo com a câmera orbitando o buraco negro (`imageio-ffmpeg`).
+- Gravação de vídeo com a câmera orbitando o buraco negro (`imageio-ffmpeg`, extra opcional `video`): `uv sync --extra video` e `uv run python -m blackhole.record`. O `record.py` cria um contexto sem janela e grava em `outputs/` um MP4 (padrão 1920×1080, 60 fps, 20 s, H.264 yuv420p; `--width`, `--height`, `--fps`, `--duration`, `--output`). Trajetória em `VideoConfig`: no instante s = i/N ∈ [0, 1), azimute = az₀ + 360°·s e inclinação = incl₀ + A·sen(2π·s) (incl₀ = 80°, A = 15°, r_cam fixo), uma volta que fecha em posição e roda em loop. Cada quadro passa pelo `FramePipeline.render_image`, igual a uma captura `F12` (escala 1,0, sem HUD), com textura co-rotante ligada e Doppler e bloom nos padrões do app (`--no-texture`, `--no-doppler`, `--no-bloom`); o relógio da textura avança 1/fps s real por quadro, na escala `AppConfig.time_scale`.
+- **Limitação do vídeo:** cada quadro é o de um observador **estático** (tétrade da seção 3.3) na posição da trajetória, não o de um observador em movimento. Não há aberração nem Doppler da câmera; numa órbita real em r = 30 (v ≈ √(M/r) ≈ 0,13c) a aberração seria visível (observador em movimento: seção 7). A textura gira de forma independente, então o loop é perfeito na posição, não na textura.
 
 ## 7. Fora do escopo
 

@@ -305,6 +305,65 @@ class AppConfig:
 
 
 @dataclass(frozen=True)
+class VideoConfig:
+    """Vídeo com a câmera orbitando o buraco negro (PLANO, Fase 5), por ``blackhole.record``.
+
+    Cada quadro é o de um observador estático (tétrade da seção 3.3) na posição da
+    trajetória, sem aberração de observador em movimento. No instante s = i/N ∈ [0, 1)
+    (N = duração × fps quadros):
+
+    - azimute = az₀ + 360°·s;
+    - inclinação = incl₀ + A·sen(2π·s) (uma oscilação por volta, acima e abaixo do disco);
+    - r_cam fixo.
+
+    A volta fecha: o quadro N (fora do vídeo) coincide em posição com o quadro 0. O relógio
+    da textura avança 1/fps s real por quadro, na escala ``AppConfig.time_scale``. Os
+    quadros passam pelo ``FramePipeline.render_image`` (escala 1,0, sem HUD), como a captura
+    ``F12``. Validado por ``record.validate_video``.
+    """
+
+    # Tamanho do quadro em pixels (par nos dois lados: o yuv420p exige), fps e duração (s).
+    width: int = 1920
+    height: int = 1080
+    fps: float = 60.0
+    duration_s: float = 20.0
+
+    # Codificação pelo imageio-ffmpeg: H.264 em yuv420p (compatível com players comuns),
+    # qualidade por CRF (0 = sem perdas, 51 = pior; 18 ≈ visualmente sem perdas). O bloco
+    # de macro 2 só exige tamanho par (com 16, o imageio reescalaria 1080 para 1088).
+    codec: str = "libx264"
+    pixel_format: str = "yuv420p"
+    crf: int = 18
+    # Faixa aceita para o CRF: a do libx264 (0 = sem perdas, 51 = pior).
+    crf_min: int = 0
+    crf_max: int = 51
+    macro_block_size: int = 2
+    # Nível de log do ffmpeg (avisos e erros aparecem no console).
+    ffmpeg_log_level: str = "warning"
+
+    # Arquivo em RenderConfig.output_dir: <prefixo>_AAAAMMDD_HHMMSS_mmm<extensão>.
+    file_prefix: str = "orbita"
+    file_suffix: str = ".mp4"
+
+    # Trajetória: centro da órbita (None = valor da CameraConfig: r_cam = 30, incl₀ = 80°,
+    # az₀ = 0°) e amplitude A da oscilação da inclinação. incl₀ ± A precisa ficar dentro
+    # dos limites de inclinação da AppConfig (1° a 179°), e r_cam dentro dos de distância.
+    r_cam: float | None = None
+    inclination_center_deg: float | None = None
+    azimuth_start_deg: float | None = None
+    inclination_amplitude_deg: float = 15.0
+
+    # Vista: a textura co-rotante do disco fica ligada no vídeo; Doppler e bloom com None
+    # seguem os padrões do app (DiskConfig.doppler e BloomConfig.enabled/mode).
+    texture: bool = True
+    doppler: bool | None = None
+    bloom: bool | None = None
+
+    # Progresso no console a cada tantos quadros.
+    progress_every_frames: int = 60
+
+
+@dataclass(frozen=True)
 class CompareConfig:
     """Comparação CPU (float64) × GPU (float32) no fundo em xadrez (PLANO, Fase 4)."""
 

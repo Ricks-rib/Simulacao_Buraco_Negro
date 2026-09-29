@@ -33,6 +33,7 @@ O `uv sync` deixa o ambiente idêntico ao que foi pedido. Por isso, um `uv sync`
 | Render CPU | `uv run python -m blackhole.render_cpu` |
 | App em tempo real | `uv run python -m blackhole.app` |
 | Comparar CPU e GPU | `uv run python -m blackhole.compare` |
+| Vídeo da órbita (extra `video`) | `uv run python -m blackhole.record` |
 
 As imagens e os vídeos gerados vão para `outputs/`, que fica fora do git.
 
@@ -96,6 +97,23 @@ uv run python -m blackhole.compare --r-cam 10 --steps 1024
 ```
 
 Opções: `--width`, `--height`, `--steps` (256 a 1024), `--r-cam` e `--inclination`. O comando imprime o renderer, as métricas e os tempos de CPU e GPU, grava `compare_cpu.png`, `compare_gpu.png` e `compare_diff.png` em `outputs/` (as duas cenas empilhadas, e os pixels ruins em vermelho na diferença) e sai com 0 dentro do aceite, 1 fora dele ou sem contexto OpenGL 3.3, ou 2 com argumentos inválidos.
+
+### Vídeo da câmera orbitando
+
+Precisa do extra `video` (`imageio` e `imageio-ffmpeg`). Sem ele, o comando não grava nada, pede o `uv sync --extra video` e sai com 1; o resto do projeto e os testes não dependem dele (os testes de gravação dão skip).
+
+```powershell
+uv sync --extra video
+uv run python -m blackhole.record
+uv run python -m blackhole.record --duration 2 --width 1280 --height 720
+uv run python -m blackhole.record --no-texture --no-doppler --no-bloom --output outputs/orbita.mp4
+```
+
+Não abre janela: cria um contexto OpenGL sem janela, renderiza cada quadro pelo mesmo caminho da captura `F12` do app (escala 1,0, sem HUD) e grava um MP4 em `outputs/orbita_<data>_<hora>.mp4` (H.264, yuv420p, CRF 18). Padrão: 1920×1080, 60 fps, 20 s (1 200 quadros). A câmera dá uma volta completa em azimute enquanto a inclinação oscila uma vez entre 65° e 95° (80° ± 15°), passando acima e abaixo do plano do disco; a volta fecha, então o vídeo roda em loop sem salto de posição. A textura co-rotante do disco fica ligada, e Doppler e bloom seguem os padrões do app. O relógio da textura avança `AppConfig.time_scale` M por segundo de vídeo.
+
+Opções: `--width` e `--height` (pares, por causa do yuv420p), `--fps`, `--duration` (s), `--output`, `--no-texture`, `--no-doppler` e `--no-bloom`. Argumentos inválidos saem com 2; sem o extra, sem contexto OpenGL 3.3 ou com erro na gravação, com 1 (o arquivo parcial é apagado). Os parâmetros (codec, CRF, trajetória, prefixo do arquivo) estão em `VideoConfig`, no `config.py`. Confirme antes com o `check_gl` que o renderer é a NVIDIA.
+
+Limitação: cada quadro é o de um observador **estático** na posição da trajetória (a mesma câmera do app), não o de um observador em órbita. Não há aberração nem Doppler da câmera; numa órbita real em r = 30 (v ≈ 0,13c) a aberração seria visível. O observador em movimento está fora do escopo (seção 7 do plano).
 
 ## GPU dedicada (notebooks e máquinas com GPU híbrida)
 
