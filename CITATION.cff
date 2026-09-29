@@ -1,0 +1,20 @@
+cff-version: 1.2.0
+message: "Se você usar este software, cite-o com os metadados abaixo."
+title: "Buraco Negro: simulação 3D em tempo real de um buraco negro de Schwarzschild"
+abstract: "Simulação 3D em tempo real de um buraco negro de Schwarzschild (sombra, lente gravitacional e disco de acreção) por ray tracing de geodésicas nulas, com renderizador de referência em CPU (float64) e shader GPU validado contra ele."
+type: software
+authors:
+  - given-names: Ricardo
+    family-names: Ramos Ribeiro
+    alias: Ricks-rib
+license: MIT
+version: 0.1.0
+date-released: 2026-09-29
+keywords:
+  - black hole
+  - Schwarzschild
+  - general relativity
+  - ray tracing
+  - gravitational lensing
+  - accretion disk
+  - OpenGL

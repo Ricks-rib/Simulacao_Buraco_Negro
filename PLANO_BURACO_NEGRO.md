@@ -181,13 +181,15 @@ O projeto fica na raiz do diretório atual (`buraco_negro/`), sem subpasta extra
 
 ```
 buraco_negro/
-├── CLAUDE.md
+├── CLAUDE.md             # regras para o agente (local, fora do git)
 ├── PLANO_BURACO_NEGRO.md
 ├── README.md
+├── LICENSE               # MIT
+├── CITATION.cff          # metadados de citação (autoria)
 ├── pyproject.toml        # projeto uv: dependências, grupo dev, extra video, layout src/
 ├── uv.lock               # versões travadas (versionado)
 ├── .python-version       # 3.12 (uv python pin)
-├── .gitignore            # pastas de agentes/skills, .venv/, outputs/, __pycache__/, cache do Numba
+├── .gitignore            # pastas de agentes/skills, BMad, CLAUDE.md, .venv/, outputs/, __pycache__/, cache do Numba
 ├── src/blackhole/
 │   ├── __init__.py
 │   ├── config.py         # parâmetros (dataclass): física, disco, câmera, qualidade, cor
@@ -319,7 +321,7 @@ buraco_negro/
 
 ## 9. Instruções de execução para o Claude Code
 
-- Regras permanentes do projeto em `CLAUDE.md`.
+- Regras permanentes do projeto em `CLAUDE.md` (arquivo local, fora do repositório).
 - Execução fase a fase, com parada ao fim de cada fase para revisão e um resumo do que foi feito e de como testar.
 - Commit ao fim de cada fase, após a revisão do usuário.
 - Nenhuma fase iniciada com testes da fase anterior falhando.

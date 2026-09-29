@@ -129,3 +129,11 @@ O comando mostra a versão do OpenGL, o vendor, o renderer e os dois executávei
 2. Adicione os **dois** executáveis que o `check_gl` mostra: `Python (venv)` e `Python (base)`. O `.venv\Scripts\python.exe` só inicia o interpretador base, por isso os dois precisam ser marcados.
 3. Em cada um, escolha **Alto desempenho**. Outra opção é configurar os dois no painel de controle NVIDIA.
 4. Rode o `check_gl` de novo e confirme que o renderer aparece como `NVIDIA GeForce RTX 5070`.
+
+## Licença e autoria
+
+Copyright (c) 2026 Ricardo Ramos Ribeiro ([@Ricks-rib](https://github.com/Ricks-rib)). Distribuído sob a licença MIT: veja [LICENSE](LICENSE). Qualquer cópia ou versão derivada precisa manter esse aviso de copyright.
+
+Para citar este projeto, use o botão "Cite this repository" do GitHub ou os metadados de [CITATION.cff](CITATION.cff).
+
+O desenvolvimento teve assistência do Claude (Anthropic), creditado nos commits como coautor.

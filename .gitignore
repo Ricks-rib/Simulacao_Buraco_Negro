@@ -70,6 +70,8 @@ dist/
 
 # --- Saídas geradas ---
 outputs/
+# Imagens de terceiros, com direitos autorais: nunca versionar
+outputs/imagens_copyright/
 
 # --- Editor e sistema ---
 .vscode/
@@ -77,5 +79,7 @@ outputs/
 Thumbs.db
 desktop.ini
 
-# --- Cache de skills renderizadas do BMad (regenerado a cada execução) ---
-_bmad/render/
+# --- BMad e instruções de agentes (uso local, fora do repositório público) ---
+_bmad/
+_bmad-output/
+CLAUDE.md

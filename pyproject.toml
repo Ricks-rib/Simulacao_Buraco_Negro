@@ -3,8 +3,10 @@ name = "blackhole"
 version = "0.1.0"
 description = "Simulação 3D em tempo real de um buraco negro de Schwarzschild por ray tracing de geodésicas nulas"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [
-    { name = "Ricks-rib", email = "Ricks-rib@users.noreply.github.com" }
+    { name = "Ricardo Ramos Ribeiro", email = "Ricks-rib@users.noreply.github.com" }
 ]
 requires-python = ">=3.12"
 dependencies = [
