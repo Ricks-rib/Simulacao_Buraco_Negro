@@ -168,6 +168,77 @@ class GpuConfig:
 
 
 @dataclass(frozen=True)
+class AppConfig:
+    """App em tempo real (PLANO, Fase 4): janela, câmera orbital, controles, HUD e benchmark.
+
+    O estado inicial (e o reset com ``R``) vem das outras dataclasses: câmera de
+    ``CameraConfig``, passos de ``GpuConfig.integrator``, exposição de ``ColorConfig``,
+    disco de ``DiskConfig`` e fundo de ``RenderConfig``.
+    """
+
+    # Janela: título, tamanho inicial (pixels lógicos) e vsync.
+    title: str = "Buraco Negro (Schwarzschild)"
+    window_size: tuple[int, int] = (1280, 720)
+    vsync: bool = True
+    resizable: bool = True
+
+    # Escala de resolução interna (cena = buffer × escala), fixa durante a execução.
+    scale: float = 1.0
+    scale_min: float = 0.25
+    scale_max: float = 2.0
+
+    # Distância da câmera: 2 ≤ r_cam ≤ 500 (PLANO, seção 3.3).
+    r_cam_min: float = 2.0
+    r_cam_max: float = 500.0
+    # Inclinação (a partir de +y) longe dos polos: a Camera recusa up paralelo à visada.
+    inclination_min_deg: float = 1.0
+    inclination_max_deg: float = 179.0
+
+    # Órbita: graus por pixel lógico arrastado com o mouse e graus por segundo nas setas.
+    orbit_mouse_deg_per_px: float = 0.25
+    orbit_key_deg_per_s: float = 90.0
+    # Zoom multiplicativo: r ← r·f^(∓1) por clique da roda e r ← r·exp(∓taxa·dt) com W/S.
+    zoom_wheel_factor: float = 1.1
+    zoom_key_rate: float = 1.0
+    # Maior frame_time usado nos controles contínuos (evita saltos depois de uma pausa), s.
+    max_input_dt_s: float = 0.1
+
+    # Passos: incremento de + / − (a faixa é [GpuConfig.min_steps, max_steps_cap]).
+    steps_increment: int = 128
+    # Exposição: multiplicada/dividida pelo fator em ] / [, limitada à faixa.
+    exposure_factor: float = 1.25
+    exposure_min: float = 1.0 / 64.0
+    exposure_max: float = 64.0
+
+    # HUD: fonte padrão do Pillow (tamanho em pixels lógicos × pixel_ratio), margem até o
+    # canto da janela e espaçamento interno (pixels lógicos), cores RGBA e atualização.
+    hud_font_size: int = 16
+    hud_margin: int = 10
+    hud_padding: int = 6
+    hud_line_spacing: int = 4
+    hud_text_color: tuple[int, int, int, int] = (255, 255, 255, 255)
+    hud_warning_color: tuple[int, int, int, int] = (255, 190, 60, 255)
+    hud_background: tuple[int, int, int, int] = (0, 0, 0, 160)
+    hud_refresh_s: float = 0.25
+    hud_visible: bool = True
+
+    # Modo desenvolvimento (--dev): intervalo de sondagem dos arquivos de shader, s.
+    shader_poll_s: float = 0.5
+
+    # Captura (F12): PNG em RenderConfig.output_dir, com prefixo + data e hora.
+    capture_prefix: str = "captura"
+
+    # Benchmark (--benchmark): alvo offscreen, quadros medidos, aquecimento e FPS alvo.
+    benchmark_size: tuple[int, int] = (1920, 1080)
+    benchmark_frames: int = 300
+    benchmark_warmup: int = 30
+    benchmark_target_fps: float = 60.0
+
+    # Passe de apresentação (textura da cena ou do HUD → janela), em GpuConfig.shader_dir.
+    present_shader: str = "present.frag"
+
+
+@dataclass(frozen=True)
 class CompareConfig:
     """Comparação CPU (float64) × GPU (float32) no fundo em xadrez (PLANO, Fase 4)."""
 

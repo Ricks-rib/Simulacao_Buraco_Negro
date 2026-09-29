@@ -41,6 +41,19 @@ _READ_COMPONENTS = 3
 _FULLSCREEN_VERTICES = 3
 # Unidade de textura da tabela de corpo negro.
 _BB_TEXTURE_UNIT = 0
+# Uniforms enviados a cada quadro por set_uniforms; reload() exige todos no programa novo.
+FRAME_UNIFORMS = (
+    "u_resolution",
+    "u_cam_pos",
+    "u_cam_forward",
+    "u_cam_right",
+    "u_cam_up",
+    "u_pixel_scale",
+    "u_max_steps",
+    "u_background",
+    "u_disk_enabled",
+    "u_exposure",
+)
 
 
 def shader_path(name, gpu: GpuConfig | None = None):
@@ -83,7 +96,8 @@ class GpuRenderer:
 
     Os parâmetros fixos (integrador, tabela de corpo negro, xadrez, estrelas, raio de
     escape) são enviados na construção; ``set_uniforms`` envia os que mudam por quadro
-    (câmera, tamanho, passos, fundo, disco, exposição).
+    (câmera, tamanho, passos, fundo, disco, exposição). ``reload`` recompila os shaders do
+    disco sem perder o programa em uso se houver erro (modo dev do app).
     """
 
     def __init__(
@@ -115,53 +129,101 @@ class GpuRenderer:
         self.vao = ctx.vertex_array(self.program, [])
         self._fbo = None
         self._size = None
+        # Mensagem do último reload() que falhou (None depois de um reload bem-sucedido).
+        self.last_error = None
         self._set_static_uniforms()
 
     # --- construção ---------------------------------------------------------
 
+    def shader_paths(self):
+        """Caminhos do vertex e do fragment shader (vigiados pelo modo dev do app)."""
+        return (
+            shader_path(self.gpu.vertex_shader, self.gpu),
+            shader_path(self.gpu.fragment_shader, self.gpu),
+        )
+
     def _compile(self):
-        vert = shader_path(self.gpu.vertex_shader, self.gpu).read_text(encoding="utf-8")
-        frag = shader_path(self.gpu.fragment_shader, self.gpu).read_text(encoding="utf-8")
+        vert_path, frag_path = self.shader_paths()
+        vert = vert_path.read_text(encoding="utf-8")
+        frag = frag_path.read_text(encoding="utf-8")
         frag = inject_defines(frag, {"MAX_STEPS_CAP": int(self.gpu.max_steps_cap)})
         return self.ctx.program(vertex_shader=vert, fragment_shader=frag)
 
-    def _set(self, name, value):
-        self.program[name].value = value
+    def reload(self):
+        """Recompila os shaders do disco (modo dev do app).
 
-    def _set_static_uniforms(self):
+        Em sucesso troca programa e VAO, reenvia os uniforms fixos e devolve ``True``. Em
+        erro (compilação, leitura do arquivo, uniform fixo ou de ``FRAME_UNIFORMS`` ausente) guarda a mensagem em
+        ``last_error``, mantém o programa antigo e devolve ``False``. Os uniforms por
+        quadro precisam de um novo ``set_uniforms`` depois de um reload bem-sucedido.
+        """
+        try:
+            program = self._compile()
+        except (moderngl.Error, OSError, UnicodeDecodeError, ValueError) as exc:
+            self.last_error = str(exc)
+            return False
+        try:
+            self._set_static_uniforms(program)
+        except (KeyError, moderngl.Error) as exc:
+            program.release()
+            self.last_error = f"uniform fixo ausente ou inválido: {exc}"
+            return False
+        # Um uniform por quadro otimizado pelo compilador faria o próximo set_uniforms falhar.
+        missing = [name for name in FRAME_UNIFORMS if name not in set(program)]
+        if missing:
+            program.release()
+            self.last_error = f"uniform por quadro ausente: {', '.join(missing)}"
+            return False
+        old_program, old_vao = self.program, self.vao
+        self.program = program
+        self.vao = self.ctx.vertex_array(program, [])
+        old_vao.release()
+        old_program.release()
+        self.last_error = None
+        return True
+
+    def _set(self, name, value, program=None):
+        (self.program if program is None else program)[name].value = value
+
+    def _set_static_uniforms(self, program=None):
+        """Envia os uniforms fixos a ``program`` (padrão: o programa atual)."""
+
+        def put(name, value):
+            self._set(name, value, program)
+
         integ = self.gpu.integrator
-        self._set("u_step_factor", float(integ.step_factor))
-        self._set("u_photon_step_factor", float(integ.photon_step_factor))
-        self._set("u_photon_r_min", float(integ.photon_r_min))
-        self._set("u_photon_r_max", float(integ.photon_r_max))
-        self._set("u_dt_min", float(integ.dt_min))
-        self._set("u_dt_max", float(integ.dt_max))
+        put("u_step_factor", float(integ.step_factor))
+        put("u_photon_step_factor", float(integ.photon_step_factor))
+        put("u_photon_r_min", float(integ.photon_r_min))
+        put("u_photon_r_max", float(integ.photon_r_max))
+        put("u_dt_min", float(integ.dt_min))
+        put("u_dt_max", float(integ.dt_max))
 
-        self._set("u_r_max_min", float(self.render_cfg.r_max_min))
-        self._set("u_r_max_factor", float(self.render_cfg.r_max_factor))
+        put("u_r_max_min", float(self.render_cfg.r_max_min))
+        put("u_r_max_factor", float(self.render_cfg.r_max_factor))
 
-        self._set("u_disk_r_in", float(self.disk.r_in))
-        self._set("u_disk_r_out", float(self.disk.r_out))
-        self._set("u_disk_t_peak", float(self.disk.t_peak))
+        put("u_disk_r_in", float(self.disk.r_in))
+        put("u_disk_r_out", float(self.disk.r_out))
+        put("u_disk_t_peak", float(self.disk.t_peak))
 
-        self._set("u_bb_table", _BB_TEXTURE_UNIT)
-        self._set("u_bb_t_min", float(self.color.bb_t_min))
-        self._set("u_bb_t_max", float(self.color.bb_t_max))
+        put("u_bb_table", _BB_TEXTURE_UNIT)
+        put("u_bb_t_min", float(self.color.bb_t_min))
+        put("u_bb_t_max", float(self.color.bb_t_max))
 
-        self._set("u_cell_rad", math.radians(self.checker.cell_deg))
-        self._set("u_checker_a", tuple(float(c) for c in self.checker.color_a))
-        self._set("u_checker_b", tuple(float(c) for c in self.checker.color_b))
+        put("u_cell_rad", math.radians(self.checker.cell_deg))
+        put("u_checker_a", tuple(float(c) for c in self.checker.color_a))
+        put("u_checker_b", tuple(float(c) for c in self.checker.color_b))
 
         stars = self.starfield
-        self._set("u_star_grid", float(stars.grid_size))
-        self._set("u_star_density", float(stars.density))
-        self._set("u_star_jitter", float(stars.jitter))
-        self._set("u_star_seed", int(stars.seed))
-        self._set("u_star_sigma", float(stars.sigma))
-        self._set("u_star_i_min", float(stars.intensity_min))
-        self._set("u_star_i_max", float(stars.intensity_max))
-        self._set("u_star_t_min", float(stars.t_min))
-        self._set("u_star_t_max", float(stars.t_max))
+        put("u_star_grid", float(stars.grid_size))
+        put("u_star_density", float(stars.density))
+        put("u_star_jitter", float(stars.jitter))
+        put("u_star_seed", int(stars.seed))
+        put("u_star_sigma", float(stars.sigma))
+        put("u_star_i_min", float(stars.intensity_min))
+        put("u_star_i_max", float(stars.intensity_max))
+        put("u_star_t_min", float(stars.t_min))
+        put("u_star_t_max", float(stars.t_max))
 
     # --- por quadro ---------------------------------------------------------
 
@@ -193,16 +255,20 @@ class GpuRenderer:
         if width < 1 or height < 1:
             raise ValueError("a imagem precisa de largura e altura ≥ 1")
 
-        self._set("u_resolution", (float(width), float(height)))
-        self._set("u_cam_pos", tuple(float(c) for c in camera.position))
-        self._set("u_cam_forward", tuple(float(c) for c in camera.forward))
-        self._set("u_cam_right", tuple(float(c) for c in camera.right))
-        self._set("u_cam_up", tuple(float(c) for c in camera.up))
-        self._set("u_pixel_scale", float(camera.pixel_scale(height)))
-        self._set("u_max_steps", max_steps)
-        self._set("u_background", int(BACKGROUNDS[background]))
-        self._set("u_disk_enabled", disk_enabled)
-        self._set("u_exposure", exposure)
+        values = {
+            "u_resolution": (float(width), float(height)),
+            "u_cam_pos": tuple(float(c) for c in camera.position),
+            "u_cam_forward": tuple(float(c) for c in camera.forward),
+            "u_cam_right": tuple(float(c) for c in camera.right),
+            "u_cam_up": tuple(float(c) for c in camera.up),
+            "u_pixel_scale": float(camera.pixel_scale(height)),
+            "u_max_steps": max_steps,
+            "u_background": int(BACKGROUNDS[background]),
+            "u_disk_enabled": disk_enabled,
+            "u_exposure": exposure,
+        }
+        for name in FRAME_UNIFORMS:
+            self._set(name, values[name])
         self._size = (width, height)
 
     def draw(self):

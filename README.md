@@ -34,7 +34,39 @@ O `uv sync` deixa o ambiente idêntico ao que foi pedido. Por isso, um `uv sync`
 | App em tempo real | `uv run python -m blackhole.app` |
 | Comparar CPU e GPU | `uv run python -m blackhole.compare` |
 
-O app em tempo real chega na Fase 4b. As imagens e os vídeos gerados vão para `outputs/`, que fica fora do git.
+As imagens e os vídeos gerados vão para `outputs/`, que fica fora do git.
+
+### App em tempo real
+
+```powershell
+uv run python -m blackhole.app
+uv run python -m blackhole.app --scale 0.75
+uv run python -m blackhole.app --dev
+uv run python -m blackhole.app --benchmark
+```
+
+A janela abre em 1280×720, redimensionável, e a imagem sempre preenche o buffer físico (sem tarjas, inclusive com escala DPI do Windows acima de 100%). A cena é renderizada no tamanho interno (buffer × escala) e esticada na janela com filtro linear. O HUD, no canto superior esquerdo, mostra FPS, passos, r_cam, inclinação, azimute, escala, tamanho interno e do buffer físico, exposição, disco e fundo. Se o renderer não for NVIDIA, o app avisa no console e no HUD.
+
+| Entrada | Ação |
+|---|---|
+| Arrastar com o mouse / setas | órbita ao redor do buraco negro |
+| Roda do mouse / `W` `S` | distância (2 ≤ r_cam ≤ 500, zoom proporcional à distância) |
+| `D` | disco ligado/desligado |
+| `G` | alternância entre xadrez e estrelas |
+| `+` / `-` (inclusive no teclado numérico) | passos de integração (256 a 1024, de 128 em 128) |
+| `[` / `]` | exposição |
+| `H` | HUD ligado/desligado |
+| `R` | câmera na posição inicial |
+| `F12` | captura em `outputs/captura_<data>_<hora>.png` (tamanho do buffer, escala 1,0, sem HUD) |
+| `Esc` | saída |
+
+A inclinação fica entre 1° e 179°, longe dos polos. Todos os parâmetros (sensibilidades, limites, HUD, benchmark) estão em `AppConfig`, no `config.py`.
+
+Opções:
+
+- `--scale`: escala de resolução interna, fixa durante a execução (0,25 a 2,0; padrão 1,0). Fora da faixa, o comando sai com erro de argumento (código 2).
+- `--dev`: modo desenvolvimento. O app recompila o `blackhole.frag` (e o `fullscreen.vert`) quando o arquivo muda. Com erro de compilação, o programa anterior continua em uso e o erro é impresso no console uma vez por mudança.
+- `--benchmark`: não abre janela. Renderiza o pipeline completo (cena no FBO interno, apresentação e HUD) num alvo offscreen de 1920×1080, com 512 passos e `ctx.finish()` por quadro, descarta o aquecimento, imprime o renderer e o FPS médio e sai com 0 se o FPS for ≥ 60 (1 caso contrário). Não depende do monitor, da escala DPI nem do vsync. Confirme antes com o `check_gl` que o renderer é a NVIDIA.
 
 ### Shader e comparação CPU × GPU
 

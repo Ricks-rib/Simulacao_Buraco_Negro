@@ -25,6 +25,16 @@ def format_version(version_code: int) -> str:
     return f"{version_code // 100}.{version_code % 100 // 10}"
 
 
+def is_expected_renderer(renderer: str, cfg: GLCheckConfig | None = None) -> bool:
+    """``True`` se o GL_RENDERER começa com ``GLCheckConfig.expected_vendor`` (sem caixa).
+
+    O driver nativo da NVIDIA começa o renderer com "NVIDIA". Camadas de tradução (ex.:
+    "D3D12 (NVIDIA GeForce ...)" do GLOn12) também contam como GPU errada.
+    """
+    cfg = GLCheckConfig() if cfg is None else cfg
+    return renderer.upper().startswith(cfg.expected_vendor.upper())
+
+
 def main() -> int:
     cfg = GLCheckConfig()
     required = format_version(cfg.min_version_code)
@@ -48,9 +58,7 @@ def main() -> int:
     finally:
         ctx.release()
 
-    # O driver nativo da NVIDIA começa o renderer com "NVIDIA". Camadas de tradução
-    # (ex.: "D3D12 (NVIDIA GeForce ...)" do GLOn12) também contam como GPU errada.
-    if not renderer.upper().startswith(cfg.expected_vendor.upper()):
+    if not is_expected_renderer(renderer, cfg):
         print()
         print(f"AVISO: o renderer não é {cfg.expected_vendor}; o contexto está na GPU errada.")
         print("Marque os dois executáveis acima como 'Alto desempenho' em")
