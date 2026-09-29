@@ -18,6 +18,9 @@ dependencies = [
     "pillow>=12.3.0",
 ]
 
+[project.urls]
+Repository = "https://github.com/Ricks-rib/Simulacao_Buraco_Negro"
+
 [project.optional-dependencies]
 video = [
     "imageio>=2.38.0",
