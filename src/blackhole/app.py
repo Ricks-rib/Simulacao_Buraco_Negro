@@ -2,8 +2,11 @@
 
 Monta um ``WindowConfig`` do ``moderngl-window`` sobre o ``GpuRenderer`` da Fase 4a. A
 cena é desenhada num FBO com textura no tamanho interno (buffer físico × escala) e
-apresentada na janela pelo passe ``shaders/present.frag`` com filtro linear. O HUD é
-texto do Pillow numa textura RGBA, desenhada no canto superior esquerdo com blend alpha.
+apresentada na janela pelo passe ``shaders/present.frag`` com filtro linear. Com o bloom
+ligado (Fase 5b, PLANO seção 3.10), a cena sai em HDR linear (RGBA16F), passa pelo
+``BloomPass`` (cadeia de mips, glare ou clássico, ACES + sRGB) e só então chega à textura
+RGBA8 da cena. O HUD é texto do Pillow numa textura RGBA, desenhada no canto superior
+esquerdo com blend alpha.
 
 A lógica pura (órbita, limites, mapeamento de teclas, tamanhos, caminho da captura) fica
 separada da janela e é testada sem GL; ``FramePipeline`` desenha em qualquer framebuffer
@@ -17,9 +20,9 @@ Uso::
     uv run python -m blackhole.app --benchmark     # FPS em 1920x1080 offscreen; sai com 0 ou 1
 
 Controles: arrastar com o mouse ou setas (órbita), roda ou W/S (distância), D (disco),
-B (Doppler e redshift), T (textura co-rotante do disco), G (xadrez/estrelas), + / -
-(passos), [ / ] (exposição), H (HUD), R (câmera inicial), F12 (captura em ``outputs/``),
-Esc (sair).
+B (Doppler e redshift), T (textura co-rotante do disco), L (bloom), K (bloom glare ↔
+clássico), G (xadrez/estrelas), + / - (passos), [ / ] (exposição), H (HUD), R (câmera
+inicial), F12 (captura em ``outputs/``, com bloom e sem HUD), Esc (sair).
 
 O relógio da textura é o tempo coordenado t_obs da câmera, que avança
 ``AppConfig.time_scale`` M por segundo real (frame_time limitado a ``max_input_dt_s``).
@@ -35,12 +38,16 @@ from pathlib import Path
 
 import moderngl
 import moderngl_window as mglw
+import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
+from blackhole.bloom import MODES as BLOOM_MODES
+from blackhole.bloom import BloomPass, hdr_texture
 from blackhole.camera import Camera
 from blackhole.check_gl import format_version, is_expected_renderer
 from blackhole.config import (
     AppConfig,
+    BloomConfig,
     CameraConfig,
     ColorConfig,
     DiskConfig,
@@ -52,9 +59,11 @@ from blackhole.physics import M
 from blackhole.render_cpu import BACKGROUNDS, save_png
 from blackhole.render_gpu import GpuRenderer, shader_path
 
-# Vértices do triângulo de tela cheia (fullscreen.vert) e componentes RGBA das texturas.
+# Vértices do triângulo de tela cheia (fullscreen.vert), componentes RGBA das texturas e
+# RGB da leitura da captura.
 _FULLSCREEN_VERTICES = 3
 _RGBA = 4
+_RGB = 3
 # Unidade de textura do passe de apresentação (a 0 é a tabela de corpo negro do renderer).
 _PRESENT_TEXTURE_UNIT = 1
 
@@ -70,12 +79,16 @@ CHAR_ACTIONS = {
     "d": "toggle_disk",
     "g": "toggle_background",
     "h": "toggle_hud",
+    "k": "toggle_bloom_mode",
+    "l": "toggle_bloom",
     "r": "reset",
     "t": "toggle_texture",
 }
 
 # Nome do fundo no HUD (a fonte padrão do Pillow só tem ASCII e "°": sem acentos).
 BACKGROUND_LABELS = {"checker": "xadrez", "stars": "estrelas"}
+# Nome do modo do bloom no HUD (ASCII).
+BLOOM_MODE_LABELS = {"glare": "glare", "classic": "classico"}
 
 
 def on_off(flag, feminine=False):
@@ -168,7 +181,8 @@ class OrbitState:
 @dataclass
 class ViewState:
     """Parâmetros de render ajustados pelo teclado (passos, exposição, fundo, disco, HUD,
-    Doppler, textura) e o relógio da textura (tempo coordenado t_obs, unidades r_s/c)."""
+    Doppler, textura, bloom e modo do bloom) e o relógio da textura (tempo coordenado
+    t_obs, unidades r_s/c)."""
 
     max_steps: int
     exposure: float
@@ -177,6 +191,8 @@ class ViewState:
     hud_visible: bool
     doppler: bool
     texture: bool
+    bloom: bool
+    bloom_mode: str
     time: float = 0.0
 
     @classmethod
@@ -187,7 +203,9 @@ class ViewState:
         color: ColorConfig,
         disk: DiskConfig,
         render_cfg: RenderConfig,
+        bloom: BloomConfig | None = None,
     ):
+        bloom = BloomConfig() if bloom is None else bloom
         return cls(
             max_steps=int(gpu.integrator.max_steps),
             exposure=float(color.exposure),
@@ -196,6 +214,8 @@ class ViewState:
             hud_visible=bool(app.hud_visible),
             doppler=bool(disk.doppler),
             texture=bool(disk.texture),
+            bloom=bool(bloom.enabled),
+            bloom_mode=bloom.mode,
         )
 
     def advance_time(self, dt_s, app: AppConfig):
@@ -216,6 +236,11 @@ class ViewState:
         modes = tuple(BACKGROUNDS)
         self.background = modes[(modes.index(self.background) + 1) % len(modes)]
 
+    def toggle_bloom_mode(self):
+        """``K``: glare ↔ clássico (vale também com o bloom desligado)."""
+        modes = tuple(BLOOM_MODES)
+        self.bloom_mode = modes[(modes.index(self.bloom_mode) + 1) % len(modes)]
+
 
 class Controls:
     """Estado da câmera e da vista, com as ações do teclado e do mouse (PLANO, Fase 4)."""
@@ -228,6 +253,7 @@ class Controls:
         color: ColorConfig | None = None,
         disk: DiskConfig | None = None,
         render_cfg: RenderConfig | None = None,
+        bloom: BloomConfig | None = None,
     ):
         self.app = AppConfig() if app is None else app
         self.cam = CameraConfig() if cam is None else cam
@@ -239,6 +265,7 @@ class Controls:
             ColorConfig() if color is None else color,
             DiskConfig() if disk is None else disk,
             RenderConfig() if render_cfg is None else render_cfg,
+            BloomConfig() if bloom is None else bloom,
         )
 
     def reset_camera(self):
@@ -262,6 +289,10 @@ class Controls:
             view.doppler = not view.doppler
         elif action == "toggle_texture":
             view.texture = not view.texture
+        elif action == "toggle_bloom":
+            view.bloom = not view.bloom
+        elif action == "toggle_bloom_mode":
+            view.toggle_bloom_mode()
         elif action == "toggle_background":
             view.toggle_background()
         elif action == "toggle_hud":
@@ -362,6 +393,11 @@ def hud_lines(controls, fps, buffer_size, scale, renderer_warning=None, dev_stat
         (
             f"doppler {on_off(view.doppler)}   textura {on_off(view.texture, True)}   "
             f"t {view.time:.1f}",
+            False,
+        ),
+        (
+            f"bloom {on_off(view.bloom)}   "
+            f"modo {BLOOM_MODE_LABELS.get(view.bloom_mode, view.bloom_mode)}",
             False,
         ),
     ]
@@ -479,6 +515,10 @@ class FramePipeline:
     ``render`` desenha em qualquer framebuffer alvo (janela ou offscreen) de tamanho
     ``buffer_size`` em pixels físicos. A textura da cena tem filtro linear, esticada na
     apresentação quando a escala ≠ 1.
+
+    Com ``view.bloom``, a cena vai para uma textura HDR RGBA16F no tamanho interno e o
+    ``BloomPass`` compõe glare ou clássico + ACES + sRGB na textura RGBA8 da cena. Sem
+    bloom, a textura HDR nem é criada e o quadro é o da Fase 5a, bit a bit.
     """
 
     def __init__(
@@ -489,11 +529,19 @@ class FramePipeline:
         render_cfg: RenderConfig | None = None,
         disk: DiskConfig | None = None,
         color: ColorConfig | None = None,
+        bloom: BloomConfig | None = None,
     ):
         self.ctx = ctx
         self.app = AppConfig() if app is None else app
         self.renderer = GpuRenderer(ctx, gpu=gpu, render_cfg=render_cfg, disk=disk, color=color)
         gpu_cfg = self.renderer.gpu
+        # Valida a BloomConfig (ValueError) e compila os shaders do bloom; as texturas HDR
+        # só são criadas no primeiro quadro com bloom.
+        try:
+            self.bloom = BloomPass(ctx, bloom, gpu_cfg)
+        except Exception:
+            self.renderer.release()
+            raise
         vert = shader_path(gpu_cfg.vertex_shader, gpu_cfg).read_text(encoding="utf-8")
         frag = shader_path(self.app.present_shader, gpu_cfg).read_text(encoding="utf-8")
         self.present = ctx.program(vertex_shader=vert, fragment_shader=frag)
@@ -502,6 +550,15 @@ class FramePipeline:
         self.hud = HudOverlay(ctx, self.app)
         self.scene_texture = None
         self.scene_fbo = None
+        self.hdr_texture = None
+        self.hdr_fbo = None
+
+    def _hdr_target(self, size):
+        if self.hdr_texture is None or self.hdr_texture.size != size:
+            self._release_hdr()
+            self.hdr_texture = hdr_texture(self.ctx, size)
+            self.hdr_fbo = self.ctx.framebuffer(color_attachments=[self.hdr_texture])
+        return self.hdr_fbo
 
     def _scene_target(self, size):
         if self.scene_texture is None or self.scene_texture.size != size:
@@ -529,8 +586,10 @@ class FramePipeline:
         ctx.disable(moderngl.BLEND)
 
         scene = self._scene_target(size)
-        scene.use()
-        scene.viewport = (0, 0, *size)
+        # Com bloom, o raio vai para a textura HDR; sem ele, direto para a da cena (RGBA8).
+        ray_target = self._hdr_target(size) if view.bloom else scene
+        ray_target.use()
+        ray_target.viewport = (0, 0, *size)
         self.renderer.set_uniforms(
             camera,
             size[0],
@@ -542,8 +601,11 @@ class FramePipeline:
             doppler=view.doppler,
             texture=view.texture,
             time=view.time,
+            hdr=view.bloom,
         )
         self.renderer.draw()
+        if view.bloom:
+            self.bloom.render(self.hdr_texture, scene, mode=view.bloom_mode)
 
         target.use()
         full = (0, 0, *buffer_size)
@@ -560,6 +622,38 @@ class FramePipeline:
         target.viewport = full
         return True
 
+    def render_image(self, camera: Camera, view: ViewState, size):
+        """Quadro no tamanho ``size``, escala 1,0 e sem HUD, num alvo offscreen próprio.
+
+        Passa pelo mesmo pipeline do quadro (com bloom, se ``view.bloom``). Devolve uint8
+        (H, W, 3) com a linha 0 no topo, como ``GpuRenderer.render()``, e religa o
+        framebuffer que estava em uso (a janela no app).
+        """
+        size = (int(size[0]), int(size[1]))
+        if size[0] < 1 or size[1] < 1:
+            raise ValueError("a imagem precisa de largura e altura ≥ 1")
+        ctx = self.ctx
+        previous = ctx.fbo if ctx.fbo is not None else ctx.detect_framebuffer()
+        target = ctx.framebuffer(color_attachments=[ctx.renderbuffer(size, components=_RGBA)])
+        try:
+            self.render(target, camera, view, size, 1.0, show_hud=False)
+            data = target.read(components=_RGB, alignment=1)
+        finally:
+            previous.use()
+            for attachment in target.color_attachments:
+                attachment.release()
+            target.release()
+        image = np.frombuffer(data, dtype=np.uint8).reshape(size[1], size[0], _RGB)
+        return np.ascontiguousarray(image[::-1])
+
+    def _release_hdr(self):
+        if self.hdr_fbo is not None:
+            self.hdr_fbo.release()
+            self.hdr_fbo = None
+        if self.hdr_texture is not None:
+            self.hdr_texture.release()
+            self.hdr_texture = None
+
     def _release_scene(self):
         if self.scene_fbo is not None:
             self.scene_fbo.release()
@@ -570,6 +664,8 @@ class FramePipeline:
 
     def release(self):
         self._release_scene()
+        self._release_hdr()
+        self.bloom.release()
         self.hud.release()
         self.present_vao.release()
         self.present.release()
@@ -744,25 +840,14 @@ class BlackHoleApp(mglw.WindowConfig):
         self.pipeline.hud.invalidate()
 
     def _capture(self, buffer_size):
-        """F12: render extra com ``GpuRenderer.render()`` no tamanho do buffer, escala 1,0
-        e sem HUD, gravado em ``outputs/``."""
-        view = self.controls.view
-        renderer = self.pipeline.renderer
+        """F12: render extra pelo pipeline do quadro (com o bloom, se ligado) no tamanho do
+        buffer, escala 1,0 e sem HUD, gravado em ``outputs/``."""
         path = capture_path(self.render_cfg.output_dir, self.app_cfg.capture_prefix)
         try:
-            renderer.set_uniforms(
-                self.controls.camera(),
-                buffer_size[0],
-                buffer_size[1],
-                max_steps=view.max_steps,
-                background=view.background,
-                disk_enabled=view.disk_enabled,
-                exposure=view.exposure,
-                doppler=view.doppler,
-                texture=view.texture,
-                time=view.time,
+            image = self.pipeline.render_image(
+                self.controls.camera(), self.controls.view, buffer_size
             )
-            save_png(renderer.render(), path)
+            save_png(image, path)
         except (OSError, ValueError, moderngl.Error) as exc:
             print(f"ERRO na captura: {exc}")
             return
@@ -800,10 +885,11 @@ class BlackHoleApp(mglw.WindowConfig):
 
 
 def run_benchmark(app: AppConfig | None = None, scale=None):
-    """Pipeline completo (cena interna + present + HUD) num alvo offscreen.
+    """Pipeline completo (cena interna + bloom + present + HUD) num alvo offscreen.
 
     Tamanho ``benchmark_size``, ``ctx.finish()`` por quadro, aquecimento descartado.
-    Doppler e textura ficam ligados (o caso mais caro) e o relógio da textura avança
+    Doppler, textura e bloom ficam ligados (o caso mais caro; o bloom no modo inicial da
+    ``BloomConfig``) e o relógio da textura avança
     ``1/benchmark_target_fps`` s por quadro. Devolve 0 com FPS médio ≥
     ``benchmark_target_fps``, 1 abaixo dele ou sem OpenGL 3.3.
     """
@@ -828,6 +914,7 @@ def run_benchmark(app: AppConfig | None = None, scale=None):
         camera, view = controls.camera(), controls.view
         view.doppler = True
         view.texture = True
+        view.bloom = True
         frame_dt = 1.0 / app.benchmark_target_fps
         pipeline = FramePipeline(ctx, app)
         target = ctx.framebuffer(color_attachments=[ctx.renderbuffer(size, components=_RGBA)])
@@ -859,8 +946,8 @@ def run_benchmark(app: AppConfig | None = None, scale=None):
     ok = fps >= app.benchmark_target_fps
     print(
         f"{size[0]}x{size[1]}, escala {scale:g} (interno {inner[0]}x{inner[1]}), "
-        f"{view.max_steps} passos, Doppler e textura ligados, {app.benchmark_frames} quadros "
-        f"(+{app.benchmark_warmup} de aquecimento)"
+        f"{view.max_steps} passos, Doppler, textura e bloom ({view.bloom_mode}) ligados, "
+        f"{app.benchmark_frames} quadros (+{app.benchmark_warmup} de aquecimento)"
     )
     print(
         f"FPS médio: {fps:.1f} ({1000.0 / fps:.2f} ms/quadro), alvo {app.benchmark_target_fps:g}"

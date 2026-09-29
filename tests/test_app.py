@@ -1,4 +1,5 @@
-"""Testes da Fase 4b: app em tempo real (lógica pura, pipeline, HUD, reload e benchmark).
+"""Testes das Fases 4b e 5b: app em tempo real (lógica pura, pipeline com e sem bloom,
+HUD, captura, reload e benchmark).
 
 A lógica da órbita, dos limites e do teclado roda sem GL. Os testes do pipeline, do
 ``reload`` e do benchmark usam um contexto standalone e dão ``skip`` sem OpenGL 3.3.
@@ -28,13 +29,14 @@ from blackhole.app import (
     internal_size,
     render_hud_image,
 )
-from blackhole.config import AppConfig, CameraConfig, GLCheckConfig, GpuConfig
+from blackhole.config import AppConfig, BloomConfig, CameraConfig, GLCheckConfig, GpuConfig
 from blackhole.physics import M
 from blackhole.render_gpu import GpuRenderer, shader_path
 
 APP = AppConfig()
 GPU = GpuConfig()
 CAM = CameraConfig()
+BLOOM = BloomConfig()
 
 
 @pytest.fixture(scope="module")
@@ -185,16 +187,20 @@ def test_toggles_and_reset():
     view = controls.view
     disk, background, hud = view.disk_enabled, view.background, view.hud_visible
     doppler, texture = view.doppler, view.texture
+    bloom, bloom_mode = view.bloom, view.bloom_mode
     for action in (
         "toggle_disk",
         "toggle_background",
         "toggle_hud",
         "toggle_doppler",
         "toggle_texture",
+        "toggle_bloom",
+        "toggle_bloom_mode",
     ):
         assert controls.apply(action)
     assert (view.disk_enabled, view.hud_visible) == (not disk, not hud)
     assert (view.doppler, view.texture) == (not doppler, not texture)
+    assert view.bloom == (not bloom) and view.bloom_mode != bloom_mode
     assert view.background != background
     controls.apply("toggle_background")
     assert view.background == background
@@ -226,6 +232,30 @@ def test_doppler_texture_defaults_and_clock():
     assert view.time == pytest.approx(APP.time_scale * M * 0.5)
 
 
+def test_bloom_defaults_and_mode_toggle():
+    """O app abre com o bloom ligado em glare; K alterna o modo também com o bloom
+    desligado, e o modo escolhido vale quando ligar."""
+    controls = Controls(APP)
+    view = controls.view
+    assert (view.bloom, view.bloom_mode) == (BLOOM.enabled, BLOOM.mode) == (True, "glare")
+    controls.apply("toggle_bloom")
+    assert not view.bloom
+    controls.apply("toggle_bloom_mode")
+    assert view.bloom_mode == "classic" and not view.bloom
+    controls.apply("toggle_bloom")
+    assert (view.bloom, view.bloom_mode) == (True, "classic")
+    controls.apply("toggle_bloom_mode")
+    assert view.bloom_mode == "glare"
+    # R não mexe no bloom.
+    controls.apply("reset")
+    assert (view.bloom, view.bloom_mode) == (True, "glare")
+
+
+def test_bloom_initial_state_from_config():
+    controls = Controls(APP, bloom=replace(BLOOM, enabled=False, mode="classic"))
+    assert (controls.view.bloom, controls.view.bloom_mode) == (False, "classic")
+
+
 # --- teclado -----------------------------------------------------------------
 
 
@@ -249,6 +279,10 @@ def test_doppler_texture_defaults_and_clock():
         ("B", "toggle_doppler"),
         ("t", "toggle_texture"),
         ("T", "toggle_texture"),
+        ("l", "toggle_bloom"),
+        ("L", "toggle_bloom"),
+        ("k", "toggle_bloom_mode"),
+        ("K", "toggle_bloom_mode"),
     ],
 )
 def test_char_action_mapping(char, action):
@@ -336,9 +370,15 @@ def test_hud_lines_show_required_fields():
         "doppler ligado",
         "textura desligada",
         "t 0.0",
+        "bloom ligado",
+        "modo glare",
     ):
         assert needle in text, needle
     assert lines[-1] == ("AVISO: GPU errada", True)
+    controls.apply("toggle_bloom")
+    controls.apply("toggle_bloom_mode")
+    text = "\n".join(t for t, _ in hud_lines(controls, 60.0, (2560, 1440), 1.0))
+    assert "bloom desligado" in text and "modo classico" in text
     # A fonte padrão do Pillow só tem ASCII e "°".
     assert all(ch.isascii() or ch == "°" for ch in text)
 
@@ -364,14 +404,27 @@ def test_renderer_warning():
 SMALL = (96, 54)
 
 
-def test_pipeline_scale_one_matches_gpu_renderer(ctx, pipeline):
+def test_pipeline_scale_one_matches_gpu_renderer(ctx):
+    """Bloom desligado: o quadro é o da Fase 5a (o do GpuRenderer), bit a bit, e o
+    pipeline nem cria a textura HDR."""
     controls = Controls(APP)
     controls.view.background = "checker"
+    controls.view.bloom = False
     camera, view = controls.camera(), controls.view
-    with offscreen(ctx, SMALL) as target:
-        assert pipeline.render(target, camera, view, SMALL, 1.0, show_hud=False)
-        frame = read_rgb(target)
-    renderer = pipeline.renderer
+    pipeline = FramePipeline(ctx, APP)
+    try:
+        with offscreen(ctx, SMALL) as target:
+            assert pipeline.render(target, camera, view, SMALL, 1.0, show_hud=False)
+            frame = read_rgb(target)
+        assert pipeline.hdr_texture is None and pipeline.bloom.level_sizes == []
+        reference = _gpu_frame(pipeline.renderer, camera, view)
+    finally:
+        pipeline.release()
+    np.testing.assert_array_equal(frame, reference)
+
+
+def _gpu_frame(renderer, camera, view):
+    """Quadro do ``GpuRenderer.render()`` (sem bloom) com os parâmetros da vista."""
     renderer.set_uniforms(
         camera,
         *SMALL,
@@ -383,13 +436,88 @@ def test_pipeline_scale_one_matches_gpu_renderer(ctx, pipeline):
         texture=view.texture,
         time=view.time,
     )
-    np.testing.assert_array_equal(frame, renderer.render())
+    return renderer.render()
+
+
+@pytest.mark.parametrize("mode", ["glare", "classic"])
+def test_pipeline_bloom_changes_frame_and_capture_matches(ctx, pipeline, mode):
+    """Com bloom, o quadro muda (halo) e a captura (render_image) é o mesmo quadro."""
+    controls = Controls(APP)
+    view = controls.view
+    view.bloom, view.bloom_mode = True, mode
+    camera = controls.camera()
+    size = (192, 108)
+    with offscreen(ctx, size) as target:
+        assert pipeline.render(target, camera, view, size, 1.0, show_hud=False)
+        frame = read_rgb(target)
+    assert pipeline.hdr_texture.size == size
+    assert pipeline.bloom.level_sizes[0] == (size[0] // 2, size[1] // 2)
+    before = ctx.fbo
+    captured = pipeline.render_image(camera, view, size)
+    assert ctx.fbo is before
+    np.testing.assert_array_equal(captured, frame)
+    no_bloom = _gpu_frame(pipeline.renderer, camera, view)
+    assert not np.array_equal(frame, no_bloom)
+    # O bloom só acrescenta luz perto das fontes; a média muda pouco.
+    assert abs(frame.astype(float).mean() - no_bloom.astype(float).mean()) < 10.0
+
+
+def test_pipeline_bloom_at_internal_scale(ctx, pipeline):
+    """Escala 0,5: o bloom roda no tamanho interno e o resultado é esticado no alvo."""
+    controls = Controls(APP)
+    controls.view.background = "checker"
+    controls.view.disk_enabled = False
+    inner = internal_size(SMALL, 0.5)
+    with offscreen(ctx, SMALL) as target:
+        pipeline.render(target, controls.camera(), controls.view, SMALL, 0.5, show_hud=False)
+        frame = read_rgb(target)
+    assert pipeline.hdr_texture.size == inner == pipeline.scene_texture.size
+    assert pipeline.bloom.level_sizes[0] == (inner[0] // 2, inner[1] // 2)
+    # A imagem cobre o alvo todo; a sombra no centro fica bem mais escura que o céu (o
+    # glare do xadrez, que cobre o céu inteiro, a clareia um pouco neste quadro minúsculo).
+    center = frame[SMALL[1] // 2, SMALL[0] // 2].astype(int).sum()
+    for j, i in ((0, 0), (0, -1), (-1, 0), (-1, -1)):
+        assert frame[j, i].astype(int).sum() > 3 * center
+
+
+def test_pipeline_invalid_bloom_config_raises(ctx):
+    with pytest.raises(ValueError):
+        FramePipeline(ctx, APP, bloom=replace(BLOOM, levels=0))
+
+
+def test_capture_goes_through_pipeline_with_bloom(ctx, pipeline, tmp_path):
+    """F12: o PNG é o quadro do pipeline (com bloom, sem HUD) no tamanho do buffer."""
+    from PIL import Image
+
+    from blackhole.config import RenderConfig
+
+    class FakeApp:
+        pass
+
+    fake = FakeApp()
+    fake.pipeline = pipeline
+    fake.controls = Controls(APP)
+    fake.controls.view.hud_visible = True
+    fake.render_cfg = replace(RenderConfig(), output_dir=str(tmp_path))
+    fake.app_cfg = APP
+    size = (160, 90)
+    pipeline.hud.update(0.0, 1.0, lambda: [("FPS 60.0", False)], force=True)
+    app_mod.BlackHoleApp._capture(fake, size)
+    files = list(tmp_path.glob(f"{APP.capture_prefix}_*.png"))
+    assert len(files) == 1
+    saved = np.asarray(Image.open(files[0]).convert("RGB"))
+    expected = pipeline.render_image(fake.controls.camera(), fake.controls.view, size)
+    np.testing.assert_array_equal(saved, expected)
+    view = fake.controls.view
+    view.bloom = False
+    assert not np.array_equal(saved, pipeline.render_image(fake.controls.camera(), view, size))
 
 
 def test_pipeline_scaled_fills_target(ctx, pipeline):
     controls = Controls(APP)
     controls.view.background = "checker"
     controls.view.disk_enabled = False  # o disco passa na frente do centro da sombra
+    controls.view.bloom = False  # o glare do céu em xadrez clareia a sombra num quadro minúsculo
     with offscreen(ctx, SMALL) as target:
         pipeline.render(target, controls.camera(), controls.view, SMALL, 0.5, show_hud=False)
         frame = read_rgb(target)
@@ -514,9 +642,14 @@ def test_reload_rejects_program_without_frame_uniform(ctx, shader_copy):
 
         frag = folder / gpu.fragment_shader
         good = frag.read_text(encoding="utf-8")
-        use = "encode_pixel(shade_sample(status, x, v, dt_coord), u_exposure)"
-        assert use in good
-        hardcoded = good.replace(use, "encode_pixel(shade_sample(status, x, v, dt_coord), 1.0)")
+        uses = {
+            "vec4(u_exposure * radiance, 1.0)": "vec4(radiance, 1.0)",
+            "encode_pixel(radiance, u_exposure)": "encode_pixel(radiance, 1.0)",
+        }
+        hardcoded = good
+        for use, fixed in uses.items():
+            assert use in good
+            hardcoded = hardcoded.replace(use, fixed)
         frag.write_text(hardcoded, encoding="utf-8")
         program = renderer.program
         assert not renderer.reload()
@@ -565,6 +698,24 @@ def test_benchmark_short_passes(ctx, monkeypatch, capsys):
     assert ctx.fbo is before
     out = capsys.readouterr().out
     assert "FPS" in out and "Renderer" in out and "OK" in out
+
+
+def test_benchmark_forces_bloom_on(ctx, monkeypatch, capsys):
+    """O benchmark mede com o bloom ligado mesmo se a BloomConfig começar desligada."""
+    shared = _SharedContext(ctx)
+    monkeypatch.setattr(app_mod.moderngl, "create_standalone_context", lambda **kw: shared)
+    monkeypatch.setattr(app_mod, "BloomConfig", lambda: replace(BLOOM, enabled=False))
+    rendered = []
+    original = FramePipeline.render
+
+    def spy(self, target, camera, view, *args, **kwargs):
+        rendered.append(view.bloom)
+        return original(self, target, camera, view, *args, **kwargs)
+
+    monkeypatch.setattr(FramePipeline, "render", spy)
+    assert app_mod.run_benchmark(replace(SHORT, benchmark_target_fps=1.0), 1.0) == 0
+    assert rendered and all(rendered)
+    assert "bloom (glare) ligados" in capsys.readouterr().out
 
 
 def test_benchmark_slow_exits_1(ctx, monkeypatch, capsys):

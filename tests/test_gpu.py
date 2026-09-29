@@ -13,10 +13,12 @@ import moderngl
 import numpy as np
 import pytest
 
+from blackhole import bloom as bloom_mod
 from blackhole import camera as camera_mod
 from blackhole import compare, physics, render_cpu, scene
 from blackhole.camera import Camera
 from blackhole.config import (
+    BloomConfig,
     CameraConfig,
     CompareConfig,
     DiskConfig,
@@ -37,8 +39,8 @@ def camera_at(r_cam, **kwargs):
     return Camera.from_config(replace(CameraConfig(), r_cam=r_cam, **kwargs))
 
 
-def frag_source():
-    return shader_path(GPU.fragment_shader).read_text(encoding="utf-8")
+def frag_source(name=None):
+    return shader_path(GPU.fragment_shader if name is None else name).read_text(encoding="utf-8")
 
 
 @pytest.fixture(scope="module")
@@ -122,10 +124,15 @@ def test_frag_cross_references_ported_functions():
 
 
 def _frag_constants(source):
-    """``const <tipo> NOME = expr;`` do .frag, avaliados em ordem (expr pode citar anteriores)."""
+    """``const <tipo> NOME = expr;`` do .frag, avaliados em ordem (expr pode citar anteriores).
+
+    ``vec3(a, b, c)`` vira a tupla ``(a, b, c)``.
+    """
     values = {}
-    for name, expr in re.findall(r"const\s+(?:float|int|uint)\s+(\w+)\s*=\s*([^;]+);", source):
+    pattern = r"const\s+(?:float|int|uint|vec3)\s+(\w+)\s*=\s*([^;]+);"
+    for name, expr in re.findall(pattern, source):
         expr = re.sub(r"\b(0[xX][0-9a-fA-F]+)[uU]\b", r"\1", expr.strip())
+        expr = re.sub(r"^vec3\((.*)\)$", r"(\1)", expr)
         values[name] = eval(expr, {"__builtins__": {}}, dict(values))  # noqa: S307
     return values
 
@@ -164,6 +171,115 @@ def test_frag_constants_match_python():
     assert set(consts) == set(expected)
     for name, value in expected.items():
         assert consts[name] == pytest.approx(value, rel=1e-12), name
+
+
+# --- shaders do bloom (Fase 5b): referências cruzadas e constantes ------------
+
+BLOOM_CFG = BloomConfig()
+ACES_SRGB = {
+    name: getattr(scene, name)
+    for name in (
+        "ACES_A",
+        "ACES_B",
+        "ACES_C",
+        "ACES_D",
+        "ACES_E",
+        "SRGB_THRESHOLD",
+        "SRGB_LINEAR_SLOPE",
+        "SRGB_SCALE",
+        "SRGB_OFFSET",
+        "SRGB_GAMMA",
+    )
+}
+TENT = {
+    name: getattr(bloom_mod, name)
+    for name in ("TENT_CENTER_WEIGHT", "TENT_EDGE_WEIGHT", "TENT_CORNER_WEIGHT")
+}
+# Shader → (referências "ver <arquivo>.py: <nome>", constantes esperadas). Um comentário
+# pode citar um grupo ("ver bloom.py: A, B, C"): a referência exigida é a primeira do grupo
+# e as constantes são todas conferidas pelo valor.
+BLOOM_SHADERS = {
+    BLOOM_CFG.down_shader: (
+        {
+            scene: ("LUMINANCE_WEIGHTS",),
+            bloom_mod: ("DOWN_CENTER_WEIGHT", "PREFILTER_NONE"),
+        },
+        {
+            "LUMINANCE_WEIGHTS": scene.LUMINANCE_WEIGHTS,
+            "DOWN_CENTER_WEIGHT": bloom_mod.DOWN_CENTER_WEIGHT,
+            "DOWN_INNER_WEIGHT": bloom_mod.DOWN_INNER_WEIGHT,
+            "DOWN_EDGE_WEIGHT": bloom_mod.DOWN_EDGE_WEIGHT,
+            "DOWN_CORNER_WEIGHT": bloom_mod.DOWN_CORNER_WEIGHT,
+            "PREFILTER_NONE": bloom_mod.PREFILTER_NONE,
+            "PREFILTER_THRESHOLD": bloom_mod.PREFILTER_THRESHOLD,
+        },
+    ),
+    BLOOM_CFG.up_shader: (
+        {bloom_mod: ("TENT_CENTER_WEIGHT",)},
+        TENT,
+    ),
+    BLOOM_CFG.composite_shader: (
+        {
+            scene: ("aces", "srgb_encode", "encode_pixel"),
+            bloom_mod: ("MODES", "TENT_CENTER_WEIGHT"),
+        },
+        {
+            "MODE_GLARE": bloom_mod.MODES["glare"],
+            "MODE_CLASSIC": bloom_mod.MODES["classic"],
+            **TENT,
+            **ACES_SRGB,
+        },
+    ),
+}
+
+
+@pytest.mark.parametrize("shader", sorted(BLOOM_SHADERS))
+def test_bloom_shader_cross_references(shader):
+    source = frag_source(shader)
+    for module, names in BLOOM_SHADERS[shader][0].items():
+        filename = module.__name__.rsplit(".", 1)[1] + ".py"
+        for name in names:
+            assert hasattr(module, name), f"{filename} não tem {name}"
+            assert f"ver {filename}: {name}" in source, f"{shader}: falta // ver {filename}: {name}"
+
+
+@pytest.mark.parametrize("shader", sorted(BLOOM_SHADERS))
+def test_bloom_shader_constants_match_python(shader):
+    consts = _frag_constants(frag_source(shader))
+    expected = BLOOM_SHADERS[shader][1]
+    assert set(consts) == set(expected)
+    for name, value in expected.items():
+        assert consts[name] == pytest.approx(value, rel=1e-12), name
+
+
+def test_hdr_output_is_exposed_linear_radiance(renderer):
+    """u_hdr_output: o alvo RGBA16F recebe exposição × radiância, e encode_pixel dela é a
+    saída RGBA8 de sempre (±1/255)."""
+    ctx = renderer.ctx
+    camera = camera_at(30.0)
+    width, height = 64, 36
+    exposure = 1.7
+    texture = ctx.texture((width, height), 4, dtype="f4")
+    fbo = ctx.framebuffer(color_attachments=[texture])
+    before = ctx.fbo
+    try:
+        renderer.set_uniforms(camera, width, height, exposure=exposure, hdr=True)
+        fbo.use()
+        fbo.viewport = (0, 0, width, height)
+        renderer.draw()
+        data = fbo.read(components=3, alignment=1, dtype="f4")
+    finally:
+        ctx.fbo = before
+        fbo.release()
+        texture.release()
+    hdr = np.frombuffer(data, dtype=np.float32).reshape(height, width, 3)[::-1]
+    assert hdr.max() > 1.0  # radiância linear, sem o corte do ACES
+    renderer.set_uniforms(camera, width, height, exposure=exposure)
+    ldr = renderer.render().astype(int)
+    encoded = np.array(
+        [[scene.encode_pixel(*map(float, px), 1.0) for px in row] for row in hdr]
+    )
+    assert np.abs(np.round(encoded * 255.0) - ldr).max() <= 1
 
 
 def test_inject_defines_after_version_line():

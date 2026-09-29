@@ -107,6 +107,10 @@ uniform sampler2D u_bb_table;
 uniform float u_bb_t_min;
 uniform float u_bb_t_max;
 uniform float u_exposure;
+// Saída HDR linear para o bloom do app, por quadro (ver render_gpu.py: set_uniforms, hdr):
+// ligada, grava u_exposure·radiância sem ACES/sRGB num alvo RGBA16F; desligada, a cadeia
+// de saída completa num alvo RGBA8.
+uniform bool u_hdr_output;
 
 // Fundo (ver config.py: CheckerConfig, StarfieldConfig).
 uniform int u_background;
@@ -530,6 +534,13 @@ void main() {
 
     float dt_coord;
     int status = integrate_ray(x, v, r_max, dt_coord);
-    // Radiância linear → exposição → ACES → sRGB; o FBO RGBA8 (não sRGB) arredonda.
-    f_color = vec4(encode_pixel(shade_sample(status, x, v, dt_coord), u_exposure), 1.0);
+    vec3 radiance = shade_sample(status, x, v, dt_coord);
+    if (u_hdr_output) {
+        // Radiância linear × exposição; o bloom e o ACES + sRGB vêm depois
+        // (bloom_composite.frag).
+        f_color = vec4(u_exposure * radiance, 1.0);
+    } else {
+        // Radiância linear → exposição → ACES → sRGB; o FBO RGBA8 (não sRGB) arredonda.
+        f_color = vec4(encode_pixel(radiance, u_exposure), 1.0);
+    }
 }

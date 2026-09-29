@@ -13,7 +13,9 @@
 - Cadeia de saída: exposição → ACES aproximado (Narkowicz) → gama sRGB, a mesma para o
   disco e para o fundo.
 
-Tudo aqui é replicado em ``shaders/blackhole.frag`` com ``// ver scene.py: <nome>``.
+Tudo aqui é replicado em ``shaders/blackhole.frag`` com ``// ver scene.py: <nome>``; a
+cadeia de saída também em ``shaders/bloom_composite.frag`` e os pesos de luminância
+(``LUMINANCE_WEIGHTS``, limiar do bloom clássico) em ``shaders/bloom_down.frag``.
 """
 
 import math
@@ -171,6 +173,12 @@ SRGB_LINEAR_SLOPE = 12.92
 SRGB_SCALE = 1.055
 SRGB_OFFSET = 0.055
 SRGB_GAMMA = 2.4
+
+
+# Pesos da luminância relativa Y = 0,2126·R + 0,7152·G + 0,0722·B em sRGB linear
+# (primárias Rec. 709, branco D65): a linha Y da inversa de XYZ_TO_SRGB. Usados pelo
+# limiar do bloom clássico (shaders/bloom_down.frag, seção 3.10).
+LUMINANCE_WEIGHTS = (0.2126, 0.7152, 0.0722)
 
 
 @njit(cache=True)

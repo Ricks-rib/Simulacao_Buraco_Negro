@@ -137,6 +137,14 @@ g = √(1 − 1,5/r) / [ √(1 − 1/r_cam) · (1 − Ω(r) · λ) ]
 - **Estrelas:** com o Doppler ligado, a luz do fundo chega à câmera estática com blueshift g_∞ = 1/√(1 − 1/r_cam): T_obs = g_∞ · T e brilho × g_∞⁴. O xadrez de depuração não muda.
 - Padrões: Doppler ligado e textura desligada (`DiskConfig`). No app, `B` alterna o Doppler e `T` a textura; o relógio t_obs avança `AppConfig.time_scale` M por segundo.
 
+### 3.10 Bloom (Fase 5)
+
+- Só no app em tempo real (GPU); o render CPU e o `compare.py` continuam sem bloom. Com o bloom ligado, o `blackhole.frag` grava a radiância linear × exposição num alvo RGBA16F, e o bloom entra antes do ACES + sRGB.
+- PSF: cadeia de mips (Jimenez, 2014), com downsample de 13 taps e upsample em tenda 3×3 somando cada nível. B = (soma dos N níveis)/N é a PSF de média 1 aplicada à fonte, uma soma de gaussianas de larguras ~2^i px, com cauda longa (próxima da cauda ~1/θ² do glare do olho).
+- **Glare** (padrão, fisicamente motivado): saída = (1 − k_g)·I + k_g·B, sem limiar. A energia média se conserva e toda a luz espalha na mesma proporção, como na PSF de uma lente ou do olho.
+- **Clássico**: saída = I + k_c·B, com fonte I·max(0, L − limiar)/L, em que L = 0,2126 R + 0,7152 G + 0,0722 B (sRGB linear, Rec. 709) e o limiar é medido na radiância já exposta (1,0 ≈ branco depois do ACES). Abaixo do limiar nada muda, e o halo soma energia.
+- Parâmetros em `BloomConfig` (k_g, k_c, limiar, níveis). No app, `L` liga e desliga o bloom e `K` alterna glare ↔ clássico; o app abre com o bloom ligado em glare. Sem bloom, o quadro é idêntico ao da seção 3.9.
+
 ## 4. Stack
 
 - `uv`: gerenciamento do Python, do ambiente virtual e das dependências (sem `pip` nem `venv` manual).
@@ -188,11 +196,13 @@ buraco_negro/
 │   ├── scene.py          # disco, corpo negro, tone mapping, fundo (xadrez/estrelas)
 │   ├── render_cpu.py     # renderizador de referência (Numba, paralelo)
 │   ├── app.py            # aplicação em tempo real (ModernGL)
+│   ├── bloom.py          # bloom do app (cadeia de mips, glare/clássico), só GPU
 │   ├── check_gl.py       # versão OpenGL, vendor e renderer da GPU
 │   ├── compare.py        # comparação CPU × GPU (contexto sem janela)
 │   └── shaders/
 │       ├── fullscreen.vert
-│       └── blackhole.frag
+│       ├── blackhole.frag
+│       └── bloom_down.frag, bloom_up.frag, bloom_composite.frag
 ├── tests/
 │   ├── test_physics.py
 │   └── test_camera.py
@@ -264,8 +274,10 @@ buraco_negro/
 | `+` / `−` (inclusive no teclado numérico) | qualidade (número de passos) |
 | `[` / `]` | exposição |
 | `H` | HUD ligado/desligado |
+| `L` | bloom ligado/desligado (seção 3.10) |
+| `K` | bloom glare ↔ clássico (seção 3.10) |
 | `R` | câmera na posição inicial |
-| `F12` | captura de tela para `outputs/` |
+| `F12` | captura de tela para `outputs/` (com bloom, sem HUD) |
 | `Esc` | saída |
 
 - HUD com FPS, número de passos, r_cam, inclinação e modos ativos.
@@ -281,7 +293,7 @@ buraco_negro/
 ### Fase 5: Realismo (opcional)
 
 - Fator de desvio g da seção 3.8, com tecla `B` para ligar e desligar (o visual de Interstellar omite o Doppler de propósito).
-- Pós-processamento com bloom.
+- Pós-processamento com bloom (seção 3.10), com teclas `L` e `K`.
 - Opcional: textura procedural no disco girando com velocidade kepleriana (disco ainda fino).
 - Gravação de vídeo com a câmera orbitando o buraco negro (`imageio-ffmpeg`).
 

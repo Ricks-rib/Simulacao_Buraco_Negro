@@ -57,6 +57,7 @@ FRAME_UNIFORMS = (
     "u_doppler",
     "u_disk_texture",
     "u_time",
+    "u_hdr_output",
 )
 
 
@@ -255,14 +256,18 @@ class GpuRenderer:
         doppler: bool | None = None,
         texture: bool | None = None,
         time: float = 0.0,
+        hdr: bool = False,
     ):
         """Envia câmera, tamanho, passos, fundo, disco, exposição, Doppler, textura e tempo.
 
         Omitidos, ``max_steps`` vem de ``GpuConfig.integrator``, ``background`` de
         ``RenderConfig``, ``disk_enabled``, ``doppler`` e ``texture`` de ``DiskConfig`` e
         ``exposure`` de ``ColorConfig``. ``time`` é o tempo coordenado t_obs da câmera
-        (unidades r_s/c), usado pela textura. Levanta ``ValueError`` com passos fora de
-        [256, 1024], fundo desconhecido, tempo não finito ou tamanho < 1.
+        (unidades r_s/c), usado pela textura. ``hdr`` liga a saída HDR linear
+        (exposição × radiância, sem ACES/sRGB) para o bloom do app, que precisa de um alvo
+        RGBA16F; ``render()`` (RGBA8, sem bloom) espera o padrão ``hdr=False``. Levanta
+        ``ValueError`` com passos fora de [256, 1024], fundo desconhecido, tempo não
+        finito ou tamanho < 1.
         """
         max_steps = self.gpu.integrator.max_steps if max_steps is None else max_steps
         max_steps = validate_max_steps(max_steps, self.gpu)
@@ -294,6 +299,7 @@ class GpuRenderer:
             "u_doppler": doppler,
             "u_disk_texture": texture,
             "u_time": time,
+            "u_hdr_output": bool(hdr),
         }
         for name in FRAME_UNIFORMS:
             self._set(name, values[name])

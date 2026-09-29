@@ -195,6 +195,39 @@ class GpuConfig:
 
 
 @dataclass(frozen=True)
+class BloomConfig:
+    """Bloom do app em tempo real (PLANO, seção 3.10), só na GPU.
+
+    A cena é renderizada em HDR linear (radiância × exposição). Uma cadeia de mips calcula
+    B = PSF ∗ fonte, com PSF de média 1 (média dos ``levels`` níveis borrados), e o
+    resultado entra antes do ACES + sRGB:
+
+    - ``"glare"``: saída = (1 − k_g)·I + k_g·B, sem limiar (a energia média se conserva);
+    - ``"classic"``: saída = I + k_c·B, com fonte I·max(0, L − limiar)/L (soma energia).
+
+    Validado por ``bloom.validate_bloom`` na construção do ``BloomPass``.
+    """
+
+    # Estado inicial no app (teclas L e K): bloom ligado e modo "glare" ou "classic".
+    enabled: bool = True
+    mode: str = "glare"
+    # k_g: fração da luz espalhada pela PSF no modo glare, em [0, 1].
+    glare_strength: float = 0.05
+    # k_c: ganho do halo no modo clássico, em [0, 1].
+    classic_strength: float = 0.5
+    # Limiar de luminância linear do clássico, na radiância já multiplicada pela exposição
+    # (1,0 ≈ branco depois do ACES), ≥ 0.
+    threshold: float = 1.0
+    # Níveis da cadeia de mips (cada um com metade do tamanho do anterior), ≥ 1. A cadeia
+    # para antes no nível de 1×1 px.
+    levels: int = 6
+    # Shaders do bloom, em GpuConfig.shader_dir.
+    down_shader: str = "bloom_down.frag"
+    up_shader: str = "bloom_up.frag"
+    composite_shader: str = "bloom_composite.frag"
+
+
+@dataclass(frozen=True)
 class AppConfig:
     """App em tempo real (PLANO, Fase 4): janela, câmera orbital, controles, HUD e benchmark.
 
